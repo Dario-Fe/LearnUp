@@ -134,12 +134,21 @@ e apri lì una sessione: deve funzionare senza alcuna configurazione, e il primo
   più vecchia → `cornice_aggiornabile` (arricchimento opzionale, la sotto-skill resta usabile). Versione
   assente o illeggibile → da rigenerare, per prudenza (vedi decisione #27).
 - **Test**: 85, tutti verdi (`unittest`, nessuna dipendenza).
-- **Sotto-skill presenti** (tutte `validate --all` OK, nessun avviso):
+- **Sotto-skill presenti** (tutte `validate --all` OK, nessun avviso), ma **una sola è pubblicata**:
   - `data/topics/metodo-feynman/` — esempio di riferimento, scritto a mano (hash `20e669fba114`, rev. 1);
-  - `data/topics/basi-di-machine-learning/` — creata da **opencode** (modalità `autodidatta`, livello 1);
+    **è l'unico argomento versionato** (vedi §12);
+  - `data/topics/basi-di-machine-learning/` — creata da **opencode** (modalità `autodidatta`, livello 1),
+    esclusa dal repository da `.git/info/exclude`;
   - `data/topics/funzionamento-degli-llm-dalle-fondamenta-ai-dettagli/` — creata da **Pi + modello locale**
     (modalità `docenza`, livello 2, prerequisiti «programmazione di base» e «concetti di base dell'AI»),
-    poi revisionata a mano: rev. 2.
+    poi revisionata a mano: rev. 2. **Materiale di lavoro dell'utente** (corsi): resta sulla sua macchina,
+    escluso dal repository da `.git/info/exclude`. È stata pubblicata per errore nel commit `c5bdbb2` e
+    rimossa dal versionamento subito dopo.
+- **Cosa è pubblico e cosa è privato** — distinzione da non confondere: il repository pubblica la
+  **cornice** (`SKILL.md`, `references/`, `scripts/`, `tests/`, documentazione) più **un solo esempio** di
+  sotto-skill (`metodo-feynman`). Gli argomenti che l'utente crea studiando restano locali: non vanno
+  versionati in automatico solo perché `validate` li promuove. Prima di aggiungere un `data/topics/<slug>/`
+  al repository, chiedere.
 - **Progressi**: un solo profilo, `data/progress/Dario/` (14 sessioni, 235 minuti, 12 concetti): i due
   profili separati (`default` da opencode, `Dario` da Pi) sono stati uniti con
   `iv.py learner merge default --into Dario` e `.profiles.json` registra l'alias, così un agente che omette
@@ -510,10 +519,17 @@ Attenzione ai due nomi diversi: il **repository** si chiama `LearnUp`, la **skil
 skill per allinearlo al repository: romperebbe le installazioni esistenti e il caricamento per nome.
 
 Versionare: `SKILL.md`, `README.md`, `README.it.md`, `AGENTS.md`, `LICENSE`, `.gitignore`, `references/`,
-`scripts/`, `assets/`, `tests/`, `data/topics/` (esempio di riferimento).
+`scripts/`, `assets/`, `tests/`, e **`data/topics/` limitatamente all'esempio di riferimento**
+(`data/topics/metodo-feynman/`).
 
 Non versionare: `data/progress/`, `data/_merged/`, `data/registry.json`, `.agents/`, `__pycache__/`
 (già in `.gitignore`).
+
+Non versionare gli argomenti creati studiando (sono materiale dell'utente): restano sulla sua macchina ed esclusi da `.git/info/exclude`, che è **locale e non versionato** — lo stesso meccanismo di
+`data/progress/`. Oggi elenca `data/topics/basi-di-machine-learning/` e
+`data/topics/funzionamento-degli-llm-dalle-fondamenta-ai-dettagli/`. Serve a due cose insieme: non
+finiscono nel repository e non sporcano `git status`, così un argomento locale non viene aggiunto per
+sbaglio con un `git add -A`.
 
 Il repository di riferimento è già inizializzato e pubblicato: non serve `git init` né `git remote add`.
 Per un **fork** o una copia nuova:
@@ -534,6 +550,8 @@ Prima di pubblicare un fork: sostituire il titolare del copyright in `LICENSE` (
 ## 13. Cosa NON fare
 
 - Non committare `data/progress/` o `data/registry.json`: contengono dati personali e indice rigenerabile.
+- Non committare gli argomenti creati studiando (`data/topics/<slug>/` diverso da `metodo-feynman`):
+  sono materiale dell'utente, non parte della skill.
 - Non usare una sotto-skill in stato `draft`, e non disattivare la validazione per "fare prima".
 - Non toccare i progressi durante una rigenerazione.
 - Non aggiungere dipendenze Python obbligatorie.
