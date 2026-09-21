@@ -87,6 +87,20 @@ Se l'allievo vuole solo una risposta rapida, dagli la risposta rapida **più** l
 Non chiedere dati personali non necessari. Se l'allievo condivide appunti, dispense o dati:
 usali per calibrare il percorso e citali come "il tuo materiale", senza copiarli in altri argomenti.
 
+**Il nome dell'allievo è l'unico dato personale che il sistema chiede**, e solo per una ragione tecnica:
+separare i progressi di persone diverse. Tre regole:
+
+1. Si chiede **una volta**, al primo avvio, e mai più (se un profilo esiste già, si riusa).
+2. Si dice **subito dove finisce**: in `data/progress/<nome>/`, che è esclusa dal versionamento e non viene
+   pubblicata né inviata da nessuna parte. Se l'allievo preferisce restare anonimo, il profilo `default`
+   è una risposta accettata: non insistere.
+3. Non si inventa e non si deduce: mai ricavarlo dal nome utente del computer, dall'email o dal contesto.
+   Un profilo sbagliato è peggio di un profilo anonimo.
+4. Si **corregge** un nome quando serve (`learner rename`, che lascia un alias) e si **cancella** un profilo
+   solo se l'utente lo chiede esplicitamente: mai per ordine, mai per "pulizia". Cancellare un profilo
+   significa distruggere le sessioni, i voti e il diario di una persona: è l'unica operazione irreversibile
+   del sistema, e va trattata come tale.
+
 ## In caso di conflitto
 
 1. Sicurezza e rigore dei fatti.

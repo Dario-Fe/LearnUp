@@ -18,7 +18,7 @@ Questa cartella è la base del sistema. Tutti i comandi si lanciano da qui.
 |---|---|
 | `references/costituzione.md` | **Regole invarianti.** Leggilo prima di insegnare: nessuna sotto-skill può contraddirle |
 | `references/protocollo-sessione.md` | Il flusso operativo: avvio, riuso o generazione, insegnamento, chiusura |
-| `references/contratto-output.md` | Come si struttura e si formatta una lezione (4 livelli, etichette, divieti) |
+| `references/contratto-output.md` | Come si struttura e si formatta una lezione (4 livelli, etichette, divieti, **obiettivi di leggibilità misurabili**) |
 | `references/modalita.md` | Modalità autodidatta / esame / docenza |
 | `references/schema-sottoskill.md` | Specifica esatta dei file di una sotto-skill e qualità minima |
 | `scripts/iv.py` | Motore: registro, ricerca, creazione, validazione, progressi, ripassi |
@@ -37,9 +37,19 @@ Le sotto-skill **non** sono skill separate da caricare col tool delle skill: son
 python scripts/iv.py status
 ```
 
-**2. Chiedi quale argomento vuole studiare** e, nella stessa conversazione, fai emergere obiettivo,
-tempo disponibile, livello e modalità (vedi `references/modalita.md`). Non trasformarlo in un questionario:
-due domande naturali bastano. Se l'utente non sa, proponi la ripresa di un argomento già avviato con
+**2. Fissa il profilo allievo e chiedi quale argomento vuole studiare.** I progressi vivono in
+`data/progress/<profilo>/`: scegli **un** identificativo per persona e passalo sempre con `--learner`
+(`log`, `due`, `stats`, `list`, `show`, `status`).
+
+- **Al primo avvio** (nessun profilo: `python scripts/iv.py learner list`) chiedi il nome una volta sola,
+  dentro la stessa domanda sull'argomento, e di' che **resta in locale** (`data/progress/` non è versionato
+  e non viene pubblicato). Se l'utente preferisce restare anonimo, ometti `--learner` e vale `default`.
+- **Se un profilo esiste già**, riusalo senza chiedere niente. Non inventare né dedurre mai un nome.
+- Se `status` segnala progressi in un altro profilo, riprendi quello invece di ripartire da zero.
+
+Nella stessa conversazione fai emergere obiettivo, tempo disponibile, livello e modalità (vedi
+`references/modalita.md`). Non trasformarlo in un questionario: il nome più due domande naturali bastano.
+Se l'utente non sa cosa studiare, proponi la ripresa di un argomento già avviato con
 `python scripts/iv.py list`.
 
 **3. Cerca *sempre* prima di generare:**
@@ -66,6 +76,10 @@ python scripts/iv.py find "<argomento>"
    prima `percorso.md`, poi `errori-tipici.md` e `glossario.md`, poi `esercizi.md` e `verifica.md`,
    poi `fonti.md` e infine `SKILL.md`. Sostituisci ogni commento `ISTRUZIONI:` con contenuto reale.
 4. `python scripts/iv.py validate <slug>` e correggi finché non passa.
+   Gli avvisi di prosa (caratteri non latini, righe duplicate, markdown rotto, parole straniere) sono
+   solo una rete: **rileggi come un correttore di bozze** — refusi, terminologia coerente col glossario,
+   frasi interrotte, riferimenti a sezioni inesistenti. Poi misura la leggibilità:
+   `python scripts/iv.py style <slug>` e spezza le frasi finché ogni file sta nell'obiettivo del livello.
 5. `python scripts/iv.py register <slug> --self-check "<come hai verificato la qualità>"`
 6. Annuncia in una riga: quanti moduli, da dove si parte.
 
@@ -79,26 +93,34 @@ Segui `references/costituzione.md` e `references/contratto-output.md`. La sequen
 
 - Un modulo per volta; mai più di 3 concetti nuovi senza verifica; segnala dove sei nel percorso.
 - Registra i voti delle verifiche appena li ottieni:
-  `python scripts/iv.py log --topic <slug> --minutes 0 --concept "<concetto>" --grade <0-5>`
+  `python scripts/iv.py log --topic <slug> --minutes 0 --concept "<concetto>" --grade <0-5> --learner <profilo>`
   (0-2 = lacuna e ripasso ravvicinato, 3 = fragile, 4 = solido, 5 = lo sa spiegare).
+  `--concept` è un **contenuto verificato** (es. "somma pesata e ReLU"), non una tappa ("fine sessione",
+  "avvio percorso"): le tappe vanno in `--summary`/`--module`/`--next`, e il motore rifiuta i marcatori.
 - Se l'allievo non capisce due volte di fila: cambia esempio, scomponi, oppure risali al prerequisito.
 - **Etichette di rigore** quando serve: *semplifico*, *è dibattuto*, *non ne sono certo*, *mia inferenza*.
   Mai inventare fonti, numeri o citazioni: se non sai, dillo e indica come verificare.
+- **Semplicità misurabile**: se la spiegazione è densa (più passaggi, concetto astratto, tono da manuale),
+  controllala prima di consegnarla: `python scripts/iv.py style --text "<spiegazione>" --level <1-4>`. Se
+  esce `1`, spezza le frasi lunghe. Gli obiettivi per livello sono in `references/contratto-output.md`.
 
 ## Chiudere (mai saltata)
 
 1. Riassunto in 3 punti + *"cosa sai fare adesso"*.
 2. Tre domande di autoverifica.
 3. Persistenza:
-   `python scripts/iv.py log --topic <slug> --minutes <N> --summary "<fatto>" --module <M> --concept "<concetto>" --grade <g> --next "<prossimo passo>"`
+   `python scripts/iv.py log --topic <slug> --minutes <N> --summary "<fatto>" --module <M> --concept "<concetto>" --grade <g> --next "<prossimo passo>" --learner <profilo>`
 4. Comunicare quando si ripassa (*"rivediamo Bayes tra 2 giorni"*).
 5. Se emergono lacune ricorrenti, proponi la sotto-skill di prerequisito.
-6. Il diario si aggiorna con `python scripts/iv.py stats --write`.
+6. Il diario si riscrive da solo con `log` (file derivato dai progressi); `stats --write` serve solo a
+   rigenerarlo a mano.
 
 ## Regole dure
 
 - **Mai insegnare senza `iv.py find`**: il riuso viene prima della generazione, sempre.
-- **Mai usare una sotto-skill in stato `draft`** o con la cornice vecchia (`iv.py status` lo segnala).
+- **Mai usare una sotto-skill in stato `draft`**, né una con cornice **major** diversa (`iv.py status` la
+  elenca in `da_rigenerare`). Una cornice più vecchia solo di **minor** è invece usabile: `cornice_aggiornabile`
+  significa "arricchiscila quando la rigeneri", non "fermati".
 - **Mai chiudere senza `iv.py log`**: senza registrazione non c'è ripetizione spaziata.
 - **Mai duplicare**: due argomenti uguali si risolvono con `alias` o `merge`, non con una nuova sotto-skill.
 - **Mai toccare `data/progress/`** rigenerando una sotto-skill: i progressi dell'allievo non si riscrivono.
@@ -108,8 +130,13 @@ Segui `references/costituzione.md` e `references/contratto-output.md`. La sequen
 
 ```bash
 python scripts/iv.py status              # debiti, bozze, da rigenerare, ripassi di oggi
-python scripts/iv.py list                # argomenti salvati
-python scripts/iv.py validate --all      # salute di tutte le sotto-skill
+python scripts/iv.py list                # argomenti salvati (segnala i progressi di altri profili)
+python scripts/iv.py validate --all      # salute delle sotto-skill + lint di prosa + leggibilità
+python scripts/iv.py style <slug>        # leggibilità per file, contro l'obiettivo del livello
+python scripts/iv.py learner list        # profili allievo e loro alias
+python scripts/iv.py learner merge <da> --into <a>   # unisce due profili senza perdere storia
+python scripts/iv.py learner rename <nome> --to "<nome corretto>"   # il vecchio nome resta come alias
+python scripts/iv.py learner delete <nome> [--yes]   # senza --yes e' solo un'anteprima
 python scripts/iv.py due                 # cosa ripassare adesso
 python scripts/iv.py stats --write       # diario di apprendimento in data/progress/<learner>/DIARIO.md
 python scripts/iv.py alias <slug> --add "<nome alternativo>"

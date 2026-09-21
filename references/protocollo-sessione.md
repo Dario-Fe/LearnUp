@@ -12,11 +12,63 @@ python scripts/iv.py status
 ```
 
 Se `bozze_da_completare` non è vuoto → completa quelle sotto-skill (FASE 1.B).
-Se `da_rigenerare` non è vuoto → cornice aggiornata: rigenera quei topic prima di usarli.
+Se `da_rigenerare` non è vuoto → la cornice è cambiata in modo **incompatibile** (major): rigenera quei
+topic prima di usarli. Se invece `cornice_aggiornabile` non è vuoto → cambiamenti **compatibili** (minor):
+la sotto-skill si usa così com'è, e si arricchisce con le regole nuove alla prossima rigenerazione.
 Se `ripassi_oggi > 0` → proponi 5 minuti di riscaldamento (FASE 2.C).
 
-**0.2 Chiedi l'argomento.** Se l'utente non l'ha già detto, chiedi: *cosa vuoi studiare oggi?*
-Se non sa da dove partire, mostra gli argomenti già avviati (`python scripts/iv.py list`) e proponine la ripresa.
+**0.2 Fissa il profilo allievo (una volta per persona).** I progressi vivono in `data/progress/<profilo>/`.
+Prima guarda chi c'è già:
+
+```bash
+python scripts/iv.py learner list
+```
+
+| Cosa vedi | Cosa fai |
+|---|---|
+| Nessun profilo | **Primo avvio**: chiedi il nome (sotto), poi usalo |
+| Un profilo | **Riusalo senza chiedere niente**: niente domanda, niente attrito |
+| Più profili | Chiedi *per chi* stai studiando (l'allievo stesso o uno studente) e usa quello |
+
+Al primo avvio chiedi il nome **nella stessa domanda** con cui chiedi l'argomento, e di' dove finisce:
+
+> *"Prima di iniziare: come vuoi che ti chiami? Lo uso solo per tenere separati i tuoi progressi, e resta
+> su questo computer — la cartella dei progressi non è versionata e non finisce nel repository.
+> Se preferisci, resto anonimo."*
+
+Poi passa **sempre** lo stesso nome con `--learner` su `log`, `due`, `stats`, `list`, `show`, `status`.
+Se l'allievo resta anonimo, ometti `--learner` (vale `default`) e non richiederlo più nella sessione.
+
+**Un nuovo allievo non si registra: nasce al primo `log`.** Per uno studente in più basta dichiararlo con
+`--learner "Marco Rossi"`: il sistema crea la sua cartella, il suo diario separato, e riusa le stesse
+sotto-skill (la conoscenza è condivisa, i progressi no). I nomi con spazi e accenti vanno bene; nomi con
+`/`, `\` o `..` vengono rifiutati dal motore, perché diventerebbero percorsi.
+
+Tre comandi per la manutenzione dei profili, tutti da usare **su richiesta dell'utente**:
+
+```bash
+python scripts/iv.py learner rename "Marco Rosi" --to "Marco Rossi"   # errore di battitura
+python scripts/iv.py learner merge "Marco" --into "Marco Rossi"       # due profili, stessa persona
+python scripts/iv.py learner delete "Marco Rossi" [--yes]             # senza --yes è solo un'anteprima
+```
+
+`rename` non unisce: se il nome di destinazione ha già dei progressi si ferma e propone `merge`. Entrambi
+lasciano un **alias**, così le sessioni vecchie continuano a trovare il profilo. `delete` cancella sessioni,
+voti, lacune e diario di quel profilo: **non proporlo mai per "pulizia"**, solo se l'utente lo chiede, e
+mostra prima l'anteprima (senza `--yes` non modifica niente).
+
+Due regole che evitano i guai visti sul campo:
+
+- **Non inventare e non dedurre il nome** (cartella utente, email, hostname): un profilo sbagliato è peggio
+  di uno anonimo.
+- **Un nome, un profilo.** Se in futuro l'allievo si presenta con una variante (`Dario F.`, `Dario` con
+  maiuscole diverse), non creare un secondo profilo: `learner list` te lo mostra e `iv.py learner merge`
+  li unisce lasciando un alias. Se `status` dice che i progressi stanno in un altro profilo, **non**
+  ripartire da zero: aggiungi quel `--learner`.
+
+**0.2-bis Chiedi l'argomento.** Se l'utente non l'ha già detto, chiedi: *cosa vuoi studiare oggi?*
+Se non sa da dove partire, mostra gli argomenti già avviati (`python scripts/iv.py list --learner <profilo>`)
+e proponine la ripresa.
 
 Nella stessa domanda raccogli, in modo naturale e non a questionario:
 
@@ -66,7 +118,29 @@ python scripts/iv.py validate <slug>
 ```
 
 Il validatore blocca placeholder, sezioni mancanti, moduli senza obiettivo verificabile,
-esercizi senza soluzioni, banche di errori troppo povere. Correggi finché non passa.
+esercizi senza soluzioni, banche di errori troppo povere.
+
+**1.4-bis Rileggi come un correttore di bozze.** Gli avvisi di prosa del validatore (caratteri non
+latini, righe duplicate, markdown sbilanciato, parole straniere rimaste) sono solo una rete: **non è un
+correttore di bozze e non lo diventerà**. Rileggi i file generati e sistema a mano:
+
+- refusi e parole inventate; termini stranieri in mezzo alla prosa italiana;
+- **terminologia coerente col glossario** (se il glossario dice «somma pesata», nessun file scrive «suma»);
+- frasi interrotte, ripetizioni, riferimenti a sezioni che non esistono («vedi sotto»);
+- ogni affermazione che il corso non sostiene con un esempio o con un'etichetta di rigore.
+
+Correggi finché non passa e non resta nessun avviso.
+
+**1.4-ter Misura la leggibilità.** Lo stile è una parte del contratto, non un gusto:
+
+```bash
+python scripts/iv.py style <slug>
+```
+
+Ogni file deve stare entro l'obiettivo del livello dichiarato (Gulpease, parole per frase, frasi oltre 30
+parole: vedi la tabella in `contratto-output.md`). Se il comando segnala "frasi lunghe", **spezza le frasi**:
+non riformulare con parole più semplici, non aggirare il numero. Un avviso di leggibilità si corregge, non
+si accetta.
 
 **1.5 Attiva.**
 
@@ -88,14 +162,30 @@ python scripts/iv.py register <slug> --self-check "<una riga: come hai verificat
 5. **Controesempio o errore tipico** — "questo è il punto in cui quasi tutti sbagliano".
 6. **Micro-verifica** — 1-2 domande, poi **fermati e aspetta la risposta**.
 
+**2.A-bis Se la spiegazione è densa, misurala prima di consegnarla.** Cioè quando introduce un meccanismo
+con più passaggi, o spiega un concetto astratto, o temi di aver scritto "da manuale":
+
+```bash
+python scripts/iv.py style --text "<la spiegazione>" --level <1-4>
+```
+
+Se esce `1`, spezza le frasi lunghe e rimisura. Costa un comando, e rende la semplicità una cosa che si
+controlla invece di una cosa che si spera: vale soprattutto per i modelli più piccoli, che compilano bene
+la struttura ma tendono a scrivere denso.
+
 **2.B Registra i voti di verifica appena li ottieni** (non a fine sessione, si perdono):
 
 ```bash
-python scripts/iv.py log --topic <slug> --minutes 0 --concept "<concetto>" --grade <0-5>
+python scripts/iv.py log --topic <slug> --minutes 0 --concept "<concetto>" --grade <0-5> --learner <profilo>
 ```
 
 Voto: 0-2 = non padroneggiato (finisce nelle lacune), 3 = fragile, 4 = solido, 5 = lo sa spiegare.
 Un voto basso non è un fallimento: è la programmazione di un ripasso ravvicinato.
+
+**`--concept` è un contenuto, non una tappa.** Va bene «somma pesata e ReLU», «previsione della parola
+successiva»; non va bene «fine sessione», «avvio percorso», «moduli 1-3 completati»: quelli descrivono la
+sessione e inquinano lacune e ripetizione spaziata (il motore li rifiuta). Cosa hai fatto e dove sei
+arrivato si scrive in `--summary`, `--module` e `--next`.
 
 **2.C Regola del riscaldamento.** Se `iv.py due` segnala concetti in scadenza, i primi 5 minuti
 sono di ripasso (domande rapide, non rispiegazioni), poi si prosegue.
@@ -112,12 +202,14 @@ Tre mosse in ordine: (1) esempio più concreto, (2) scomposizione in passi più 
 
 ```bash
 python scripts/iv.py log --topic <slug> --minutes <N> --summary "<cosa è stato fatto>" \
-  --module <M> --concept "<concetto>" --grade <0-5> --next "<prossimo passo>"
+  --module <M> --concept "<concetto>" --grade <0-5> --next "<prossimo passo>" --learner <profilo>
 ```
+
+Il diario si riscrive da solo con questo comando (è un file derivato dai progressi).
 
 4. **Comunica il ripasso**: *"Rivediamo Bayes tra 2 giorni"* (i tempi vengono da `iv.py log`).
 5. **Se emergono lacune ricorrenti**: proponi di creare la sotto-skill di prerequisito.
-6. Il diario si aggiorna con `python scripts/iv.py stats --write`.
+6. Se vuoi vedere o salvare il diario a mano: `python scripts/iv.py stats --write --learner <profilo>`.
 
 ## Cosa non fare mai
 
@@ -126,3 +218,4 @@ python scripts/iv.py log --topic <slug> --minutes <N> --summary "<cosa è stato 
 - Chiudere una sessione senza `iv.py log`.
 - Duplicare un argomento invece di aggiungere un alias o unire (`iv.py merge`).
 - Promettere una ripetizione spaziata e non registrarla.
+- Consegnare un modulo che `iv.py style` segnala fuori obiettivo, senza aver provato ad accorciare le frasi.

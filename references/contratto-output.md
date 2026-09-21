@@ -14,6 +14,39 @@ Come deve essere fatta una risposta-lezione. Vale per ogni argomento, dentro ogn
 Il livello **si dichiara all'inizio** ("ti spiego come a un principiante") e si può cambiare in qualsiasi momento.
 Nel dubbio, parti un livello sotto quello che sembra: è più facile salire che scendere.
 
+### Lo stile è misurabile, non solo richiesto
+
+"Spiegazione semplice" non è un auspicio lasciato al buon cuore del modello: il livello dichiarato fissa dei
+**numeri** che il motore sa controllare. Sono calcolati con l'indice **Gulpease** (leggibilità dell'italiano:
+≥ 80 molto facile, 60-79 facile, 40-59 difficile, < 40 molto difficile).
+
+| Livello | Gulpease minimo | Parole per frase (max) | Frasi oltre 30 parole (max) |
+|---|---|---|---|
+| 1 — Curioso | 60 | 16 | 10% |
+| 2 — Principiante | 60 | 16 | 10% |
+| 3 — Studente | 50 | 20 | 20% |
+| 4 — Collega | 40 | 24 | 30% |
+
+Questi limiti non sono un vezzo estetico: **sono il modo in cui il rigore diventa verificabile anche sulla
+forma**. Un testo che li supera non è "troppo difficile" in astratto: ha frasi lunghe, subordinate incastrate
+e parole astratte, ed è quello che all'allievo fa perdere il filo.
+
+Due usi concreti:
+
+- **Sui file generati** (quando si crea o si rigenera una sotto-skill):
+  `python scripts/iv.py style <slug>` — esce `0` se tutto è entro l'obiettivo, `1` se qualche file è fuori
+  (è un avviso, non un guasto: il messaggio dice quale frase è troppo lunga).
+- **Su una spiegazione in bozza**, prima di consegnarla:
+  `python scripts/iv.py style --text "<la tua spiegazione>" --level <1-4>`
+
+**Regola operativa:** se il comando segnala "frasi lunghe", non rispedire lo stesso testo con parole più
+semplici — **spezza le frasi**. È quasi sempre la causa, ed è l'unica correzione che funziona anche quando
+la spiegazione è già corretta nel contenuto.
+
+Cosa questo *non* misura, e nessun comando misurerà: se la spiegazione è **vera**, se l'esempio è **azzeccato**,
+se il livello di astrazione è quello giusto. Quella parte resta responsabilità dell'insegnante, e si difende
+con le etichette di affidabilità e con un esempio concreto per ogni idea astratta.
+
 ## Struttura di una lezione
 
 Blocchi nell'ordine, con lunghezze indicative:

@@ -66,13 +66,20 @@ Questa separazione è il cuore del progetto: la conoscenza è rigenerabile, i tu
   banca degli errori tipici, esercizi a difficoltà crescente con criteri di autovalutazione,
   prova finale, fonti per livello.
 - **Valida prima di usare**: uno scheletro non compilato non può essere attivato (il validatore blocca
-  placeholder, moduli senza obiettivo verificabile, esercizi senza soluzioni).
+  placeholder, moduli senza obiettivo verificabile, esercizi senza soluzioni) e avvisa sui difetti di
+  scrittura tipici degli agenti: caratteri non latini, righe duplicate, markdown rotto.
 - **Riconosce i doppioni**: alias e unione di argomenti simili, senza perdere i progressi.
 - **Ricorda e programma i ripassi**: ripetizione spaziata (SM-2 semplificato) su ogni concetto verificato.
 - **Tiene un diario**: minuti, argomenti che stanno raffreddando, lacune ricorrenti, cosa rivedere adesso.
+- **Ti chiede il nome una volta sola** (al primo avvio) e tiene i progressi in un profilo per persona —
+  in `data/progress/<nome>/`, che resta sulla tua macchina. Se preferisci restare anonimo, il profilo è `default`.
+- **Più studenti sullo stesso computer**: basta dichiararli (`--learner "Marco Rossi"`). Un profilo nuovo nasce
+  al primo log con il suo diario, e le sotto-skill restano condivise: la conoscenza si rigenera, i progressi no.
 - **Tre modalità**: autodidatta, preparazione esame, docenza (più profili allievo separati).
 - **Rigore dichiarato**: ogni affermazione è etichettata *consolidato / semplificato / dibattuto /
   inferenza / da verificare*, e ogni sotto-skill ha una sezione **Da verificare**. Mai fonti inventate.
+- **Semplicità verificabile**: ogni livello ha obiettivi numerici di leggibilità (indice Gulpease, parole
+  per frase) controllati da `iv.py style` e dal validatore — così "spiega semplice" non dipende dal modello.
 
 ---
 
@@ -130,6 +137,7 @@ Non serve configurare nulla: chiedi e basta.
 
 | Tu dici | Cosa succede |
 |---|---|
+| *(primo avvio in assoluto)* | Ti chiede come chiamarti — per separare i tuoi progressi, e resta su questo computer. Puoi rispondere "resto anonimo" |
 | *"Voglio studiare il metodo Feynman"* | Cerca nel registro; se l'argomento non c'è, genera la sotto-skill, la valida e comincia |
 | *"Riprendiamo il metodo Feynman"* | Riusa la sotto-skill salvata, legge i progressi e riparte dal punto giusto |
 | *"Prepariamo l'esame di statistica"* | Passa in modalità esame: piano a ritroso, simulazioni a tempo, soglie |
@@ -155,7 +163,7 @@ qualche minuto, ma quella conoscenza resta e si riusa per sempre.
 | **Controllo** | Schema, minimi di sostanza, placeholder residui: blocca le bozze | `iv.py validate <slug>` |
 | **Attivazione** | Stato `active`, hash del contenuto, versione della cornice | `iv.py register <slug>` |
 | **Memoria** | Sessioni, voti, lacune, ripetizione spaziata | `iv.py log` · `iv.py due` |
-| **Rigenerazione** | Cambia la cornice → i topic con versione vecchia vengono segnalati | `iv.py status` |
+| **Rigenerazione** | Cambia la cornice: major nuova → topic `da_rigenerare`; minor nuova → `cornice_aggiornabile` (opzionale) | `iv.py status` |
 
 Il registro confronta **chiavi canoniche** (parole di contenuto, ordinate, senza accenti) e **alias**:
 "Roma antica", "Impero romano" e "Storia romana" possono convergere sullo stesso argomento invece di
@@ -212,6 +220,7 @@ python scripts/iv.py validate <slug> | --all [--json]
 python scripts/iv.py register <slug> [--self-check "…"] [--force]
 python scripts/iv.py list [--json]               # argomenti salvati
 python scripts/iv.py show <slug>                 # file della sotto-skill + progressi
+python scripts/iv.py style <slug> | --text "…" [--level 2]   # leggibilità (Gulpease) vs obiettivo del livello
 
 # manutenzione del registro
 python scripts/iv.py alias <slug> --add "nome alternativo" | --list
@@ -223,6 +232,10 @@ python scripts/iv.py log --topic <slug> --minutes 45 --summary "…" --module 2 
       --concept "concetto" --grade 4 --concept "altro" --grade 1 --next "…" [--learner nome]
 python scripts/iv.py due [--within 7] [--json]   # cosa ripassare adesso
 python scripts/iv.py stats [--write] [--json]    # diario di apprendimento (Markdown)
+python scripts/iv.py learner list | --json       # profili allievo con progressi e alias
+python scripts/iv.py learner merge <da> --into <a>   # unisce due profili senza perdere storia
+python scripts/iv.py learner rename <nome> --to "<nome corretto>"   # corregge un nome (lascia un alias)
+python scripts/iv.py learner delete <nome> [--yes]   # senza --yes mostra solo l'anteprima
 ```
 
 Opzioni globali: `--data <cartella>` (o variabile d'ambiente `IV_DATA`) per tenere i dati fuori dalla skill,
@@ -246,7 +259,7 @@ Opzioni globali: `--data <cartella>` (o variabile d'ambiente `IV_DATA`) per tene
 │   └── schema-sottoskill.md
 ├── scripts/iv.py             # motore: registro, ricerca, validazione, progressi, ripassi
 ├── assets/templates/topic/   # scheletro di una nuova sotto-skill
-├── tests/test_iv.py          # 39 test del motore
+├── tests/test_iv.py          # 54 test del motore
 └── data/
     ├── registry.json         # indice (rigenerabile, non versionato)
     ├── topics/<slug>/        # LE SOTTO-SKILL SALVATE
@@ -269,7 +282,8 @@ rm -rf data/topics/metodo-feynman && python scripts/iv.py reindex
 ## Estendere il sistema
 
 - **Nuova regola pedagogica** → aggiungila a `references/costituzione.md`, incrementa `BASE_VERSION`
-  in `scripts/iv.py`: gli argomenti con versione vecchia compariranno in `iv.py status` come `da_rigenerare`.
+  in `scripts/iv.py`. Solo una **major** nuova mette gli argomenti esistenti in `da_rigenerare` (i contenuti
+  vanno rifatti); una **minor** nuova li elenca in `cornice_aggiornabile` (arricchimento opzionale).
 - **Nuova modalità** (corso aziendale, ripetizioni…) → `references/modalita.md` + la tupla `MODES` in `iv.py`.
 - **Nuovo file di sotto-skill** (flashcard, mappe…) → template in `assets/templates/topic/`,
   `REQUIRED_FILES` in `iv.py`, sezione in `references/schema-sottoskill.md`.
@@ -280,7 +294,7 @@ rm -rf data/topics/metodo-feynman && python scripts/iv.py reindex
 
 ```bash
 python -m unittest discover -s tests -t tests
-python scripts/iv.py validate --all     # salute delle sotto-skill
+python scripts/iv.py validate --all     # salute delle sotto-skill + lint di prosa + leggibilità
 ```
 
 ---
@@ -404,7 +418,8 @@ richiamala esplicitamente: *"usa la skill insegnante-virtuale"*. Dopo averla ins
 (i file in `references/`) è in italiano.
 
 **Ho aggiornato le regole: perdo i progressi?** No. I progressi vivono in `data/progress/`, separati dalla
-conoscenza. Cambiando `BASE_VERSION` gli argomenti vengono marcati `da_rigenerare` e si riallineano.
+conoscenza. Cambiando la **major** di `BASE_VERSION` gli argomenti vengono marcati `da_rigenerare` e si
+riallineano; con una minor nuova restano usabili e compaiono in `cornice_aggiornabile`.
 
 **Posso studiare in due?** Sì: `--learner <nome>` su `log`, `due` e `stats` mantiene profili separati.
 
@@ -422,7 +437,8 @@ Issue e pull request sono benvenute. Prima di aprire una PR:
 
 1. `python -m unittest discover -s tests -t tests` (tutti verdi);
 2. `python scripts/iv.py validate --all` (nessuna sotto-skill rotta);
-3. se cambi la cornice, aggiorna `BASE_VERSION` e le reference coinvolte.
+3. se cambi la cornice, aggiorna `BASE_VERSION` e le reference coinvolte (major = contenuti da rifare,
+   minor = aggiornamento opzionale).
 
 Se aggiungi un esempio di argomento, fallo passare dal validatore: gli esempi incompleti non entrano.
 

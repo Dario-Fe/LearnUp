@@ -32,7 +32,7 @@ Il repository **è** la skill: `SKILL.md` sta nella radice.
 Qualunque modifica va chiusa con questi tre comandi, dalla radice del repository:
 
 ```bash
-python -m unittest discover -s tests -t tests    # deve dire OK (39 test al 2026-09-21)
+python -m unittest discover -s tests -t tests    # deve dire OK (85 test al 2026-09-21)
 python scripts/iv.py validate --all              # nessuna sotto-skill rotta
 python scripts/iv.py status                      # nessuna bozza pendente, nessun da_rigenerare inatteso
 ```
@@ -69,6 +69,11 @@ che l'agente esegua davvero i comandi, non che risponda a memoria.
 | 5 | *"Com'è andato il mio studio?"* | `stats` con diario, lacune ricorrenti e argomenti che stanno raffreddando |
 | 6 | Fine di una sessione qualsiasi | `log` eseguito e prossima data di ripasso comunicata all'utente |
 | 7 | Dopo il test: `python scripts/iv.py status` | nessuna bozza pendente; `da_rigenerare` vuoto; `ripassi_oggi` coerente con i voti dati |
+| 8 | Chiedi una spiegazione lunga e poi: `python scripts/iv.py style <slug>` | tutti i file entro l'obiettivo di leggibilità del livello (`percorso.md` per primo) |
+| 9 | `python scripts/iv.py learner list` | un solo profilo per persona (o gli alias dichiarati): nessun progresso orfano |
+| 10 | *"Studiamo X anche per Marco Rossi"* | il profilo `Marco Rossi` nasce al primo `log`, con diario proprio, e la sotto-skill **non** viene rigenerata |
+| 11 | *"Ho scritto male il cognome di Marco, correggilo"* | `learner rename`: il profilo si sposta, resta un alias, nessuna sessione persa |
+| 12 | *"Cancella il profilo di Marco"* | mostra l'anteprima (sessioni, minuti, cosa verrebbe perso) e attende conferma: senza `--yes` non cancella |
 
 Per provare il percorso **come lo vivrebbe chi installa la skill da GitHub** (senza la junction locale),
 copia il repository in una cartella temporanea, mettilo in `prova/.agents/skills/insegnante-virtuale/`
@@ -89,7 +94,7 @@ e apri lì una sessione: deve funzionare senza alcuna configurazione, e il primo
 | `references/schema-sottoskill.md` | Specifica dei file di una sotto-skill, minimi di qualità, checklist, esempio buono/cattivo | L'agente quando genera |
 | `scripts/iv.py` | **Motore**: registro, ricerca, creazione, validazione, alias/merge, progressi, SM-2, diario | L'agente, l'utente, i test |
 | `assets/templates/topic/` | Scheletro di sotto-skill con placeholder `{{...}}` e commenti `ISTRUZIONI:` | `iv.py create` |
-| `tests/test_iv.py` | 39 test del motore (caricamento via `importlib`, data dir temporanea) | Chi modifica `iv.py` |
+| `tests/test_iv.py` | 85 test del motore (caricamento via `importlib`, data dir temporanea) | Chi modifica `iv.py` |
 | `data/topics/<slug>/` | **Le sotto-skill salvate** (8 file) | Generati dall'agente, letti dall'agente |
 | `data/registry.json` | Indice: slug, titolo, chiave canonica, alias, stato, `base_version`, hash, revisione | `iv.py` (rigenerabile da disco) |
 | `data/progress/<learner>/` | Stato allievo: sessioni, concetti (SM-2), lacune, log, `DIARIO.md` | `iv.py log/stats` |
@@ -106,26 +111,47 @@ e apri lì una sessione: deve funzionare senza alcuna configurazione, e il primo
 | `validate_topic` | Tutti i controlli sullo schema e sui minimi | **Non verifica la verità dei contenuti**: vedi §10 |
 | `cmd_register` | Attiva la sotto-skill: hash del contenuto, `base_version`, revisione, `quality.validated` | Rifiuta di attivare se la validazione fallisce (senza `--force`) |
 | `sm2` | Ripetizione spaziata semplificata (intervalli 1 → 6 → round(intervallo × ease)) | Un elemento per concetto, non card multiple |
-| `cmd_log` | Registra sessione, voti, lacune; aggiorna il piano di ripasso | `--concept` e `--grade` devono avere la stessa lunghezza |
+| `cmd_log` | Registra sessione, voti, lacune; aggiorna il piano di ripasso e riscrive il diario | `--concept` e `--grade` devono avere la stessa lunghezza; `session_marker()` rifiuta le etichette di sessione |
+| `session_marker` | Riconosce «fine sessione», «avvio percorso» e simili come non-concetti | Non allargarlo troppo: «il modulo 3: somma pesata» è un concetto valido (c'è un test) |
+| `learner_dir` / `other_profiles` | Risolvono il profilo allievo (alias, maiuscole/spazi) e dichiarano i profili con progressi | Confronto case-insensitive: non usare `PROGRESS_DIR / learner` direttamente |
+| `clean_profile_name` | Valida il nome del profilo: spazi e accenti sì, separatori di percorso e metacaratteri no | Senza il controllo, `--learner ../x` scrive fuori da `data/progress/` |
+| `build_diary` / `write_diary` | Compongono e salvano il diario; li usano `stats` e `log` | Il diario è derivato: non aggiungere stato che vive solo lì |
 | `cmd_stats` | Diario in Markdown (minuti, voto medio, lacune ricorrenti, argomenti raffreddati, suggerimenti) | Con `--write` produce `data/progress/<learner>/DIARIO.md` |
-| `build_parser` / `main` | CLI argparse di 12 sottocomandi + `--data` / `--skill-dir` | `_utf8_stdout()` è necessario su Windows (console cp1252) |
+| `ProseLint` | Avvisi di scrittura: caratteri non latini, righe duplicate o troncate, markdown rotto, forestierismi | Sono **avvisi**, mai errori: non deve bloccare il riuso di una sotto-skill utile |
+| `frame_state` / `version_major` | Confrontano la cornice di un topic con `BASE_VERSION`: `da_rigenerare` (major) vs `aggiornabile` (minor) | Prima confrontava la stringa intera: qualunque ritocco marcava tutto come da rigenerare |
+| `cmd_learner` | `list`, `merge`, `rename`, `delete` dei profili allievo | Il profilo assorbito/rinominato resta come alias: non reintrodurre `PROGRESS_DIR / learner` a mano. `delete` senza `--yes` è un'anteprima che esce 1 senza toccare nulla |
+| `rewrite_profile_aliases` | Dopo una rinomina: chi puntava al vecchio nome segue il nuovo, e il vecchio diventa un alias | Senza questo, il nome vecchio ricrea un profilo vuoto e le sessioni finiscono nel posto sbagliato |
+| `style_metrics` / `style_problems` | Leggibilità misurabile: Gulpease, parole per frase, frasi oltre 30 parole | I parametri sono per livello (`STYLE_TARGETS`): cambiarli cambia cosa il validatore avvisa |
+| `cmd_style` | Misura una sotto-skill (`style <slug>`) o una bozza di spiegazione (`--text`) | Esce `1` quando è fuori obiettivo: è un avviso, non un guasto |
+| `build_parser` / `main` | CLI argparse di 14 sottocomandi + `--data` / `--skill-dir` | `_utf8_stdout()` è necessario su Windows (console cp1252) |
 
 ---
 
 ## 4. Stato attuale (2026-09-21)
 
-- **Versione della cornice**: `BASE_VERSION = "1.0.0"` in `scripts/iv.py`. Cambiarla è il meccanismo che
-  segnala le sotto-skill da rigenerare (`iv.py status` → `da_rigenerare`).
-- **Test**: 39, tutti verdi (`unittest`, nessuna dipendenza).
-- **Sotto-skill presenti**: `data/topics/metodo-feynman/` (esempio di riferimento completo, validato,
-  hash `20e669fba114`, revisione 1) e `data/topics/basi-di-machine-learning/` (creata il 2026-09-21 da
-  **opencode**, non da Codebuff: è la prova di agnosticismo fra agenti, vedi §4.1). Entrambe modalità
-  `autodidatta`, livello iniziale 1, prerequisiti nessuno, `validate --all` OK.
-- **Progressi**: `data/progress/default/` contiene un ciclo completo su `basi-di-machine-learning`
-  (9 sessioni, 140 minuti, 9 concetti in SM-2, `DIARIO.md` generato) prodotto dal test con opencode.
-  Sono dati di prova, non versionati: cancellabili senza conseguenze.
+- **Versione della cornice**: `BASE_VERSION = "1.0.0"` in `scripts/iv.py`. Il confronto è per **major**
+  (`frame_state`): major diversa → `da_rigenerare` (i contenuti vanno rigenerati); stessa major ma versione
+  più vecchia → `cornice_aggiornabile` (arricchimento opzionale, la sotto-skill resta usabile). Versione
+  assente o illeggibile → da rigenerare, per prudenza (vedi decisione #27).
+- **Test**: 85, tutti verdi (`unittest`, nessuna dipendenza).
+- **Sotto-skill presenti** (tutte `validate --all` OK, nessun avviso):
+  - `data/topics/metodo-feynman/` — esempio di riferimento, scritto a mano (hash `20e669fba114`, rev. 1);
+  - `data/topics/basi-di-machine-learning/` — creata da **opencode** (modalità `autodidatta`, livello 1);
+  - `data/topics/funzionamento-degli-llm-dalle-fondamenta-ai-dettagli/` — creata da **Pi + modello locale**
+    (modalità `docenza`, livello 2, prerequisiti «programmazione di base» e «concetti di base dell'AI»),
+    poi revisionata a mano: rev. 2.
+- **Progressi**: un solo profilo, `data/progress/Dario/` (14 sessioni, 235 minuti, 12 concetti): i due
+  profili separati (`default` da opencode, `Dario` da Pi) sono stati uniti con
+  `iv.py learner merge default --into Dario` e `.profiles.json` registra l'alias, così un agente che omette
+  `--learner` continua a scrivere in `Dario`. Dati locali, non versionati.
+- **Leggibilità misurata** (2026-09-21, `iv.py style`): mediana dei file 72.9 Gulpease, minimo 59.4, massimo
+  86.7, frase più lunga 35 parole. I tre argomenti hanno leggibilità simile — il topic di opencode+Muse è
+  stato il **più** leggibile (70.0 su `percorso.md`), quello di Pi+modello locale il più denso (60.3).
+  Misurare è servito a smentire l'ipotesi "il modello X scrive più complicato": la differenza percepita
+  stava nella lezione in chat, che nulla registra (vedi debito tecnico in §11).
 - **Repository**: radice = skill; `README.md` (inglese) + `README.it.md` (italiano) + `LICENSE` MIT +
-  `.gitignore` che esclude dati personali e indice. Non ancora inizializzato come repo git.
+  `.gitignore` che esclude dati personali e indice. Repository git inizializzato su `main`, con `origin`
+  puntato a https://github.com/Dario-Fe/LearnUp (vedi §12).
 - **Installazione locale**: `.agents/skills/insegnante-virtuale` è una **junction** verso la radice
   (creata con PowerShell; `mklink` da Git Bash fallisce per l'escape dei percorsi). Serve solo al discovery
   da parte dell'agente: è in `.gitignore` e non fa parte della pubblicazione.
@@ -134,10 +160,18 @@ e apri lì una sessione: deve funzionare senza alcuna configurazione, e il primo
 
 ### 4.1 Compatibilità fra agenti (verificata il 2026-09-21)
 
-Il sistema è stato usato per intero da **opencode** (agente diverso da quello di sviluppo) su un argomento
-nuovo, "basi di machine learning", senza alcuna modifica alla skill. Esito: ciclo completo riuscito
-(`find` → `create` → contenuti → `validate` → `register` → 9 `log` → `stats`/`DIARIO.md`), indice coerente,
-nessun file estraneo lasciato nel repository.
+Il sistema è stato usato per intero da due agenti diversi da quello di sviluppo, su argomenti nuovi e senza
+alcuna modifica alla skill:
+
+1. **opencode** → "basi di machine learning" (autodidatta). Ciclo completo riuscito (`find` → `create` →
+   contenuti → `validate` → `register` → 9 `log` → `stats`/`DIARIO.md`), indice coerente, nessun file
+   estraneo nel repository.
+2. **Pi + modello locale (onith1.5)** → "funzionamento degli LLM" (docenza). Ciclo completo riuscito, e il
+   test ha fatto emergere tre classi di problemi reali, ora chiuse nel motore (decisioni #20-#23):
+   `modalita: null` nei log, concetti-marcatore di sessione registrati in SM-2, profilo allievo scritto con
+   un nome diverso da quello di lettura. La **qualità della scrittura** è invece risultata il punto debole
+   del modello piccolo (refusi, inglese rimasto in prosa, righe duplicate, una frase di corsi) e ha
+   motivato il lint di prosa e il passo di rilettura obbligatorio (§9, decisione #23).
 
 Cosa questo dimostra e cosa no:
 
@@ -146,9 +180,14 @@ Cosa questo dimostra e cosa no:
 - **Tollerato**: campi extra nei `meta.json` sono ammessi (l'agente può aggiungerne), e `register` scrive
   il blocco `quality` da sé. Non aggiungere validazioni che rifiutino campi sconosciuti: romperebbero
   il funzionamento con agenti diversi.
-- **Da sapere**: gli agenti dimenticano gli argomenti opzionali (`--mode`, `--level`). Per questo `iv.py
-  log` eredita il livello dal `meta.json` quando non glielo si passa. Se aggiungi opzioni utili, prevedi
-  un default sensato invece di un campo vuoto.
+- **Da sapere**: gli agenti dimenticano gli argomenti opzionali (`--mode`, `--level`, `--learner`). Per
+  questo `iv.py log` eredita livello e modalità dal `meta.json`, e `status`/`list` segnalano quando i
+  progressi stanno sotto un altro profilo allievo. Se aggiungi opzioni utili, prevedi un default sensato
+  invece di un campo vuoto.
+- **Agenti diversi sbagliano le stesse cose**: le tre classi di errore del test con Pi erano già state
+  commesse da opencode (progressi su un profilo diverso) o sono strutturali (marcatori di sessione
+  scambiati per concetti). Quando un problema si ripete su due agenti, la correzione non è un'istruzione
+  in più nella documentazione ma un **controllo nel motore** che lo rende impossibile.
 - **Non verificato** con altri client (Claude Code, Codex, Cursor): il presupposto comune è solo che il
   client sappia caricare una skill per `description` e eseguire comandi shell.
 
@@ -165,15 +204,32 @@ Cosa questo dimostra e cosa no:
    (o come avviso solo se non incidono sulla qualità didattica).
 5. **Le sotto-skill restano annidate** in `data/topics/`: non trasformarle in skill di primo livello
    (inquinerebbero il routing dell'agente con decine di descrizioni concorrenti).
-6. **Le reference non contraddicono la costituzione.** In caso di conflitto vince `costituzione.md`;
+6. **I file derivati si rigenerano da soli.** `registry.json` si riallinea dai `meta.json` e `DIARIO.md`
+   dai progressi (`log` lo riscrive). Non aggiungere stato che vive solo in un file derivato: su un clone,
+   o dopo un agente distratto, diventa una bugia.
+7. **`--concept` è un contenuto, non una tappa.** Il motore rifiuta i marcatori di sessione («fine
+   sessione», «avvio percorso»): inquinano lacune, voto medio e ripetizione spaziata. I contenuti verificati
+   vanno in `--concept`, la narrazione della sessione in `--summary`/`--module`/`--next`.
+8. **Un profilo allievo per persona.** `--learner` va passato con lo stesso identificativo a ogni comando
+   (il confronto ignora maiuscole e spazi, ma non due nomi diversi). Chi legge i progressi deve vedere dove
+   sono: `list` e `status` lo dichiarano, e nessun comando deve dedurre il profilo dal nome del computer.
+   Il nome si chiede **una volta**, al primo avvio, dicendo dove finisce (`data/progress/`, non versionato),
+   e si riusa senza richiederlo quando un profilo esiste già: mai dedurlo da email, cartella utente o
+   hostname, e mai insistere con chi preferisce restare anonimo.
+9. **Le reference non contraddicono la costituzione.** In caso di conflitto vince `costituzione.md`;
    se cambi una regola, aggiorna entrambe e incrementa `BASE_VERSION`.
-7. **Nessuna dipendenza esterna.** Solo libreria standard Python: il progetto deve girare con un
+10. **Nessuna dipendenza esterna.** Solo libreria standard Python: il progetto deve girare con un
    `git clone` e Python installato, niente pip, niente venv.
-8. **Nessun dato personale nel repository.** `data/progress/`, `data/_merged/`, `data/registry.json`
+11. **Nessun dato personale nel repository.** `data/progress/`, `data/_merged/`, `data/registry.json`
    restano fuori dal versionamento.
-9. **Il motore non parla italiano "da terminale" e basta**: ogni comando deve avere output JSON stabile
+12. **La semplicità ha obiettivi numerici.** Il livello dichiarato fissa Gulpease, parole per frase e quota
+   di frasi lunghe (`STYLE_TARGETS`): cambiarli cambia un contratto, non una preferenza. Non trasformare
+   l'avviso di leggibilità in errore bloccante finché il corpus non sta tutto sopra soglia con margine.
+13. **I profili allievo si uniscono, non si duplicano.** Due nomi per la stessa persona si risolvono con
+   `iv.py learner merge`, che unisce i progressi e lascia un alias: senza alias la divisione si ricrea.
+14. **Il motore non parla italiano "da terminale" e basta**: ogni comando deve avere output JSON stabile
    (`--json` dove esiste) perché è così che l'agente lo consuma.
-10. **Rigore dichiarato, mai fonti inventate.** Vale per i contenuti generati e per la documentazione:
+15. **Rigore dichiarato, mai fonti inventate.** Vale per i contenuti generati e per la documentazione:
     se un'informazione non è verificata, va etichettata come tale (vedi `references/costituzione.md`).
 
 ---
@@ -189,10 +245,10 @@ Cosa questo dimostra e cosa no:
   ordinate (`key_of`). Non cambiare la formula senza una migrazione.
 - **Date e orari**: ISO 8601 (`YYYY-MM-DD`), salvati come stringhe nelle stesse forme attuali.
 - **File di dati**: JSON indentato 2, `ensure_ascii=False`, sempre con newline finale.
-- **Idempotenza**: i comandi di sola lettura non scrivono **contenuti** né progressi. L'unica scrittura
-  ammessa è `data/registry.json`, e solo per allinearsi ai `meta.json` (creazione se assente, più i topic
-  o gli alias mancanti). Se il registro è già allineato, il file non viene toccato: c'è un test che lo
-  verifica confrontando l'`mtime`.
+- **Idempotenza**: i comandi di sola lettura non scrivono **contenuti** né progressi. Le uniche scritture
+  ammesse sono i file **derivati**: `data/registry.json` (allineamento ai `meta.json`, toccato solo se
+  differisce: c'è un test sull'`mtime`) e `data/progress/<learner>/DIARIO.md` (riscritto da `log` e da
+  `stats --write`). Un comando di lettura non deve mai modificare `data/topics/`.
 - **Compatibilità Windows**: aprire file con `encoding="utf-8"` esplicito e non rimuovere `_utf8_stdout()`.
 - **Messaggi CLI**: campi JSON in italiano (`ok`, `azione`, `prossimi_passi`), perché l'agente li interpreta
   direttamente.
@@ -204,10 +260,12 @@ Cosa questo dimostra e cosa no:
 ### 7.1 Aggiungere o modificare una regola pedagogica (nuova versione della cornice)
 
 1. Modifica `references/costituzione.md` (e/o `contratto-output.md`, `protocollo-sessione.md`).
-2. Incrementa `BASE_VERSION` in `scripts/iv.py` (semantica: major = regole che invalidano i contenuti,
-   minor = aggiunte compatibili).
+2. Incrementa `BASE_VERSION` in `scripts/iv.py`: **major** = regole che invalidano i contenuti generati
+   (tutti i topic diventano `da_rigenerare`), **minor** = aggiunte compatibili (i topic restano usabili e
+   compaiono in `cornice_aggiornabile`). Il codice confronta solo la major (`frame_state`).
 3. Aggiorna `references/schema-sottoskill.md` se la regola tocca la struttura dei file.
-4. `python scripts/iv.py status` → i topic vecchi devono comparire in `da_rigenerare`.
+4. `python scripts/iv.py status` → con una major nuova i topic vecchi compaiono in `da_rigenerare`; con una
+   minor nuova in `cornice_aggiornabile` (c'è un test per entrambi i casi).
 5. Verifica il ciclo: §2.
 6. Aggiorna la Roadmap solo se cambia il perimetro del prodotto.
 
@@ -270,11 +328,29 @@ non entrano.
 python -m unittest discover -s tests -t tests
 ```
 
-Copertura attuale (39 test): normalizzazione e similarità, ciclo di riuso (`none`/`exact`/`variant`/
+Copertura attuale (85 test): normalizzazione e similarità, ciclo di riuso (`none`/`exact`/`variant`/
 `draft_incompleto`), rifiuto dei duplicati, alias, merge con migrazione dei progressi, reindex,
 validazione (bozza vs completo, `--all`, cornice vecchia → `da_rigenerare`), SM-2 (intervalli crescenti,
 azzeramento dopo voto basso), log, `due`, profili allievo separati, `show`, `stats --write`, CLI esterna
-via `subprocess` (JSON e codice di uscita).
+via `subprocess` (JSON e codice di uscita), più quattro classi nate dai test con altri agenti:
+
+- `TestGaranzieSuiDatiRegistrati` — eredità di `--mode`, rifiuto dei marcatori di sessione (e non-rifiuto
+  dei concetti veri che nominano un modulo), profilo allievo insensibile a maiuscole, visibilità dei
+  progressi di altri profili in `list`/`status`, diario riscritto da `log`, prereq multipli separati.
+- `TestLintDiProsa` — caratteri non latini, righe duplicate, markdown sbilanciato: **avvisi, non errori**
+  (c'è un test esplicito che una sotto-skill con refusi resta valida e riusabile).
+- `TestProfiliAllievo` — creazione di un secondo allievo al primo `log` (cartella e diario propri),
+  progressi che non si mescolano, nome con maiuscole diverse che resta un solo profilo, unione di due
+  profili con alias, scheda SM-2 più avanzata conservata, rifiuto dei nomi con separatori di percorso
+  e del nome vuoto (che resta anonimo), rinomina semplice, rinomina di sole maiuscole (su Windows passa da
+  un nome temporaneo), rifiuto della rinomina verso un profilo già usato, anteprima di cancellazione che non
+  tocca niente, cancellazione che rimuove anche gli alias e non lascia profili zombie.
+- `TestStileMisurabile` — Gulpease e conteggi, righe di elenco come frasi, asticella del livello che sale
+  e scende, comando `style`, avviso di leggibilità nel validatore e silenzio sui file troppo corti.
+
+Quando aggiungi un controllo al `ProseLint`, aggiungi anche il test che lo attiva e il test che verifica
+che una sotto-skill pulita non produca avvisi: le euristiche di lingua sono le più facili da far
+"sparare a vuoto".
 
 Convenzioni dei test: nessun test tocca `data/` reale — `setUp` chiama `iv.set_data_dir(tempdir)`.
 I comandi si eseguono con l'helper `run([...])`, che cattura stdout e codice di uscita. I contenuti di
@@ -299,6 +375,26 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 - **Il validatore non verifica la verità**: garantisce struttura e minimi. La qualità sostanziale è
   responsabilità dell'agente che genera, e si difende con le etichette di affidabilità e la sezione
   *Da verificare* in `fonti.md`.
+- **Il lint di prosa non è un correttore di bozze**: intercetta caratteri non latini, righe duplicate o
+  troncate, markdown rotto, parole straniere residue. Non vede refusi come «soma» per «somma», «ordem» per
+  «ordine», «unallievo» per «un allievo»: per quelli serve la rilettura (FASE 1.4-bis del protocollo).
+  Misura presa sul campo, sul corso sugli LLM scritto da un piccolo modello locale: il lint ha prodotto 7
+  avvisi (tutti difetti meccanici reali), mentre la rilettura a mano ha corretto una trentina fra refusi e
+  frasi rotte che il lint non vede — due insiemi quasi disgiunti.
+- **Trappola del profilo allievo**: gli agenti inventano un nome per l'allievo (`Dario`) e poi leggono con
+  il default. `list` mostrava «0 sessioni, mai» su un argomento con 5 sessioni. Ora `list` e `status`
+  dichiarano gli altri profili con progressi; il confronto dei nomi ignora maiuscole e spazi. Restano
+  possibili due profili *diversi* per la stessa persona: è una scelta dell'agente, non un bug del motore —
+  chiedi prima di unire (`iv.py learner merge`), perché l'unione è irreversibile sul nome assorbito.
+- **Alias e cancellazione sono legati**: cancellare un profilo rimuove anche gli alias che puntavano a lui
+  (chiave *o* destinazione). Se non li togli, il vecchio nome risolve su un profilo inesistente e il primo
+  comando lo ricrea vuoto: un profilo zombie, vuoto ma credibile.
+- **Nome profilo = nome di cartella**: spazi e accenti sono ammessi (`Marco Rossi`), separatori di percorso
+  no. Il payload dei comandi riporta il profilo **risolto** (`learner_dir(...).name`), non quello richiesto:
+  così "ho scritto in `default` mentre credevo `Dario`" si vede subito invece di restare nascosto.
+- **Leggibilità ≠ qualità**: `style` misura frasi e parole, non la verità, la profondità o la bontà
+  dell'esempio. Un testo può passare tutti gli obiettivi numerici e spiegare male. Non usare il numero come
+  alibi, e non riscrivere frasi buone solo per spostare un indice di 0,5 punti.
 - **Placeholder e `ISTRUZIONI:`**: il validatore li cerca come stringhe. Se cambi la sintassi dei template,
   aggiorna `PLACEHOLDERS` in `iv.py`.
 - **`già`/`più` → `gia`/`piu`**: la normalizzazione rimuove gli accenti, quindi le stopword vanno scritte
@@ -333,6 +429,16 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 | 17 | `sync_from_disk` salva l'indice ricostruito, invece di ricostruirlo solo in memoria | Su un clone l'indice deve essere vero anche su disco; un file derivato vuoto è peggio di un file assente. Le scritture avvengono solo se il registro differisce dai `meta.json` |
 | 18 | `iv.py log` eredita `--level` dal `meta.json` invece di lasciare `null` | Gli agenti omettono gli opzionali; un campo vuoto nei progressi costringe l'agente successivo a reinterpretare il metadato |
 | 19 | Il repository si chiama `LearnUp`, la skill `insegnante-virtuale` | Nomi con destinatari diversi: il repository è il progetto da leggere su GitHub, la skill è il contratto con l'agente. Rinomare la skill invaliderebbe `npx skills add` e il caricamento per nome |
+| 20 | `log` eredita anche `--mode` dal `meta.json` e rifiuta i concetti-marcatore di sessione | Le stesse omissioni degli agenti che avevano già motivato l'eredità di `--level`; i marcatori («fine sessione: moduli 1-3») creavano lacune finte, voci in `weak_spots` e suggerimenti sbagliati nel diario |
+| 21 | Il profilo allievo è normalizzato (maiuscole/spazi) e `list`/`status` dichiarano i profili con progressi | Un agent (Pi) ha scritto in `Dario`, un altro (opencode) in `default`: la tabella diceva «mai» su argomenti studiati. Il motore non unifica profili diversi — sarebbe una scelta sui dati dell'utente — ma non li nasconde |
+| 22 | `DIARIO.md` si riscrive da `log` (oltre a `stats --write`) | È un file derivato come il registro: se dipende da un passo che l'agente può saltare, resta indietro. Stesso principio della decisione #17 |
+| 23 | Lint di prosa come **avviso** in `validate` + passo di rilettura obbligatorio nel protocollo | Il validatore garantiva lo schema ma non la scrittura: un modello locale ha prodotto refusi, inglese rimasto in prosa, righe duplicate e un modulo con una frase duplicata. Gli avvisi rendono visibile la deriva senza bloccare il riuso (una sotto-skill utile non deve diventare inutilizzabile per una virgola) |
+| 24 | Obiettivi di leggibilità numerici per livello (`iv.py style`, `STYLE_TARGETS`) | "Spiega semplice" era solo una richiesta in prosa: dipendeva interamente dal modello. Con Gulpease, parole per frase e quota di frasi lunghe diventa un contratto verificabile — e la risposta operativa è sempre la stessa: **spezza le frasi**. Soglie tarate sul corpus esistente (mediana 72.9, minimo 59.4) |
+| 25 | `iv.py learner merge` unisce due profili allievo e registra l'alias in `.profiles.json` | La divisione dei progressi non è un caso isolato: l'hanno prodotta due agenti indipendenti. Un comando determinista evita la chirurgia sui file, e l'alias impedisce che il profilo assorbito rinasca al primo comando senza `--learner` |
+| 26 | Il nome dell'allievo si chiede **al primo avvio** (solo se non esiste nessun profilo) e si dichiara che resta in locale | Chiude alla radice la divisione dei profili: il nome non è più una variabile che l'agente inventa o deduce, ed è il momento naturale per dire dove finiscono i dati. La condizione "solo se non ci sono profili" tiene la personalizzazione senza aggiungere attrito a ogni sessione: chi ha già studiato non vede nessuna domanda in più. Il rifiuto resta legittimo (`default`) |
+| 27 | `da_rigenerare` scatta solo al cambio di **major**; una minor più vecchia diventa `cornice_aggiornabile` | Il codice confrontava la stringa intera, mentre la documentazione prometteva "minor = aggiunte compatibili": conseguenza, ogni ritocco alle regole avrebbe marcato come da rigenerare anche i topic perfettamente validi, con lavoro inutile e un allarme che perde significato. Ora il codice dice quello che le reference promettevano. Una versione assente o illeggibile resta `da_rigenerare`: provenienza ignota = ricontrollare |
+| 28 | Il nome del profilo è validato (spazi sì, separatori di percorso no) e i comandi riportano il profilo **risolto** | Un secondo studente deve nascere dichiarandolo, e i nomi reali hanno spazi ("Marco Rossi"): bloccare gli spazi sarebbe stato ostile, lasciar passare `../x` avrebbe scritto fuori da `data/progress/`. Riportare il nome risolto chiude la classe di bug in cui l'output dichiara un profilo e il file ne dimostra un altro (già visto con `log`, che rispondeva `default` senza dirlo mentre l'agente credeva di aver scritto altrove) |
+| 29 | `learner rename` separato da `learner merge`, e `learner delete` con anteprima obbligatoria (`--yes`) | Sono tre operazioni diverse e vanno confuse il meno possibile: correggere un nome (rename, senza toccare i contenuti), fondere due storie (merge), distruggere una storia (delete). `rename` verso un profilo con progressi si rifiuta e rimanda a `merge`; `delete` senza `--yes` non modifica niente ed espone cosa verrebbe perso |
 
 ---
 
@@ -384,6 +490,14 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 - [ ] `references/` è solo in italiano: valutare una cartella `references/en/` quando ci sarà pubblico non italiano.
 - [ ] `validate_topic` non controlla la coerenza fra `meta.json` e il contenuto (es. livello dichiarato vs
       registro linguistico dei moduli): valutare un avviso euristico.
+- [ ] Il `ProseLint` non ha un dizionario: refusi come «soma»/«somma» o «ordem»/«ordine» passano. Idea:
+      confrontare il vocabolario del topic con quello del `glossario.md` (distanza di edit 1 tra un termine
+      del glossario e una parola dei moduli) per intercettare la **deriva terminologica**.
+- [ ] Lo stile si misura sui **file** generati, non sulla lezione che l'agente scrive in chat: la deriva di
+      stile durante l'insegnamento resta non verificabile a posteriori. Idea minima: `log --explanation "…"`
+      che sorveglia le ultime frasi consegnate, o un `style --text` obbligatorio prima di ogni modulo nuovo.
+- [ ] `style` misura la *scrittura*: non vede la densità concettuale (quanti concetti nuovi per riga) né se
+      il livello di astrazione è adatto. Un `--concetti-per-100-parole` euristico è il prossimo passo naturale.
 - [ ] Nessuna migrazione automatica del registro quando cambia la formula delle chiavi canoniche.
 
 ---
@@ -401,20 +515,17 @@ Versionare: `SKILL.md`, `README.md`, `README.it.md`, `AGENTS.md`, `LICENSE`, `.g
 Non versionare: `data/progress/`, `data/_merged/`, `data/registry.json`, `.agents/`, `__pycache__/`
 (già in `.gitignore`).
 
+Il repository di riferimento è già inizializzato e pubblicato: non serve `git init` né `git remote add`.
+Per un **fork** o una copia nuova:
+
 ```bash
 git init && git add . && git status      # verificare che non compaia nulla di personale
 git commit -m "Insegnante Virtuale: skill di studio rigenerante"
 git branch -M main
-git remote add origin https://github.com/Dario-Fe/LearnUp.git      # remoto di riferimento (già esistente)
-git push -u origin main
-# per un fork: gh repo create <utente>/LearnUp --public --source=. --push
+gh repo create <utente>/LearnUp --public --source=. --push
 ```
 
-Repository pubblico: **https://github.com/Dario-Fe/LearnUp**. Il nome del repository (`LearnUp`) e
-quello della skill (`insegnante-virtuale`) sono deliberatamente diversi: la skill si chiama così perché
-è quello che l'agente carica, il repository perché è il progetto. Verificare che
-`npx skills add Dario-Fe/LearnUp --list` trovi la skill `insegnante-virtuale`.
-
+Verificare che `npx skills add <utente>/LearnUp --list` trovi la skill `insegnante-virtuale`.
 Prima di pubblicare un fork: sostituire il titolare del copyright in `LICENSE` (già impostato a
 `Dario-Fe` nel repository di riferimento).
 

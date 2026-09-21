@@ -374,17 +374,55 @@ class TestValidazione(BaseIV):
         self.assertEqual(row["slug"], slug)
         self.assertFalse(row["da_rigenerare"])
 
-    def test_cornice_vecchia_segnala_da_rigenerare(self):
-        slug = self.crea_completo("Analisi matematica")
+    def set_cornice(self, slug: str, version: str) -> None:
+        """Simula una sotto-skill generata con una cornice diversa da quella corrente."""
         reg = iv.load_registry()
-        reg["topics"][0]["base_version"] = "0.9.0"
+        for entry in reg["topics"]:
+            if entry["slug"] == slug:
+                entry["base_version"] = version
         iv.save_registry(reg)
         meta = json.loads((iv.topic_dir(slug) / "meta.json").read_text(encoding="utf-8"))
-        meta["base_version"] = "0.9.0"
+        meta["base_version"] = version
         (iv.topic_dir(slug) / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_cornice_major_diversa_segnala_da_rigenerare(self):
+        """Major = regole che invalidano i contenuti: vanno rigenerati."""
+        slug = self.crea_completo("Analisi matematica")
+        self.set_cornice(slug, "0.9.0")
         code, out = run(["status"])
         payload = json.loads(out)
         self.assertEqual(payload["da_rigenerare"], [slug])
+        self.assertEqual(payload["cornice_aggiornabile"], [])
+        code, out = run(["list"])
+        self.assertIn("da rigenerare", out)
+
+    def test_cornice_minor_non_obbliga_a_rigenerare(self):
+        """Minor = aggiunte compatibili: aggiornamento opzionale, la sotto-skill resta usabile."""
+        slug = self.crea_completo("Analisi matematica")
+        major = iv.version_major(iv.BASE_VERSION)
+        self.set_cornice(slug, f"{major}.0.5")
+        code, out = run(["status"])
+        payload = json.loads(out)
+        self.assertEqual(payload["da_rigenerare"], [])
+        self.assertEqual(payload["cornice_aggiornabile"], [slug])
+        self.assertIn("opzionale", payload["prossimo_passo"])
+        code, out = run(["list", "--json"])
+        row = json.loads(out)["argomenti"][0]
+        self.assertFalse(row["da_rigenerare"])
+        self.assertTrue(row["cornice_aggiornabile"])
+
+    def test_versione_illeggibile_conta_come_da_rigenerare(self):
+        """Provenienza ignota: meglio ricontrollare che fidarsi."""
+        slug = self.crea_completo("Analisi matematica")
+        self.set_cornice(slug, "boh")
+        code, out = run(["status"])
+        self.assertEqual(json.loads(out)["da_rigenerare"], [slug])
+
+    def test_version_major_legge_le_versioni(self):
+        self.assertEqual(iv.version_major("2.10.3"), "2")
+        self.assertEqual(iv.version_major(" v1"), "1")
+        self.assertIsNone(iv.version_major(""))
+        self.assertIsNone(iv.version_major(None))
 
     def test_validate_all_su_cartella_vuota(self):
         code, out = run(["validate", "--all", "--json"])
@@ -506,6 +544,432 @@ class TestIndiceDerivato(BaseIV):
         time.sleep(0.01)
         run(["status"])
         self.assertEqual(iv.REGISTRY.stat().st_mtime_ns, prima)
+
+
+class TestGaranzieSuiDatiRegistrati(BaseIV):
+    """Errori veri osservati con agenti diversi (opencode, Pi, modello locale)."""
+
+    def test_log_eredita_la_modalita_dal_meta(self):
+        """Senza ereditarla il diario registrava `modalita: null` su un corso in docenza."""
+        slug = self.crea("Probabilita", mode="docenza")
+        fill_topic(slug, "Probabilita", iv.topic_dir(slug))
+        run(["register", slug])
+        run(["log", "--topic", slug, "--minutes", "30"])
+        progress = iv.progress_for(slug, "default")
+        self.assertEqual(progress["mode"], "docenza")
+        self.assertEqual(progress["log"][0]["modalita"], "docenza")
+
+    def test_modalita_esplicita_prevale_sul_meta(self):
+        slug = self.crea("Probabilita", mode="docenza")
+        fill_topic(slug, "Probabilita", iv.topic_dir(slug))
+        run(["register", slug])
+        run(["log", "--topic", slug, "--minutes", "30", "--mode", "esame"])
+        self.assertEqual(iv.progress_for(slug, "default")["mode"], "esame")
+
+    def test_log_rifiuta_un_marcatore_di_sessione(self):
+        """'fine sessione' come concetto creava una lacuna finta e un ripasso inutile."""
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["log", "--topic", slug, "--minutes", "30",
+                         "--concept", "fine sessione: moduli 1-3 completati", "--grade", "4"])
+        self.assertEqual(code, 1)
+        self.assertIn("sessione", json.loads(out)["error"])
+        progress = iv.progress_for(slug, "default")
+        self.assertEqual(progress["concepts"], {})
+        self.assertEqual(progress["weak_spots"], [])
+
+    def test_log_rifiuta_un_avvio_percorso(self):
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["log", "--topic", slug, "--minutes", "5",
+                         "--concept", "avvio percorso", "--grade", "0"])
+        self.assertEqual(code, 1)
+        self.assertEqual(iv.progress_for(slug, "default")["concepts"], {})
+
+    def test_log_accetta_concetti_che_nominano_un_modulo(self):
+        """La guardia non deve colpire i contenuti veri che citano 'modulo'."""
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["log", "--topic", slug, "--minutes", "30",
+                         "--concept", "il modulo 3: somma pesata e ReLU", "--grade", "4"])
+        self.assertEqual(code, 0, out)
+        codice = json.loads(out)["programmati"][0]["concetto"]
+        self.assertIn("somma pesata", codice)
+
+    def test_profilo_allievo_non_sensibile_a_maiuscole(self):
+        """'Dario' e 'dario' devono restare lo stesso profilo, non due."""
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Dario"])
+        self.assertEqual(iv.progress_for(slug, "dario")["total_minutes"], 30)
+        self.assertEqual(len(iv.learner_profiles()), 1)
+
+    def test_list_segnala_i_progressi_di_altri_profili(self):
+        """La tabella non deve dire 'mai' su un argomento studiato in un altro profilo."""
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Dario"])
+        code, out = run(["list", "--json"])
+        payload = json.loads(out)
+        self.assertEqual(payload["argomenti"][0]["sessioni"], 0)
+        self.assertEqual(payload["altri_profili"][0]["learner"], "Dario")
+        code, out = run(["list"])
+        self.assertIn("Dario", out)
+
+    def test_status_indica_dove_sono_i_progressi(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Dario"])
+        code, out = run(["status"])
+        self.assertIn("Dario", json.loads(out)["prossimo_passo"])
+
+    def test_log_aggiorna_il_diario(self):
+        """Il diario e' derivato: non deve restare indietro se l'agente salta stats --write."""
+        slug = self.crea_completo("Probabilita")
+        diary = iv.PROGRESS_DIR / "default" / "DIARIO.md"
+        self.assertFalse(diary.exists())
+        code, out = run(["log", "--topic", slug, "--minutes", "45", "--summary", "Modulo 1"])
+        self.assertEqual(code, 0, out)
+        self.assertTrue(diary.exists())
+        self.assertEqual(Path(json.loads(out)["diario"]), diary)
+        testo = diary.read_text(encoding="utf-8")
+        self.assertIn("45", testo)
+        self.assertIn("Sessioni registrate | 1", testo)
+
+    def test_prereq_multipli_diventano_voci_distinte(self):
+        slug = self.crea("Probabilita", prereq="programmazione di base; concetti di base dell'AI")
+        meta = json.loads((iv.topic_dir(slug) / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["prereqs"], ["programmazione di base", "concetti di base dell'AI"])
+
+
+class TestProfiliAllievo(BaseIV):
+    """Due nomi per la stessa persona non devono spezzare la storia di studio."""
+
+    def test_merge_unifica_i_progressi(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "60", "--concept", "Bayes", "--grade", "5"])
+        run(["log", "--topic", slug, "--minutes", "15", "--concept", "Bayes", "--grade", "3",
+             "--learner", "Dario"])
+        code, out = run(["learner", "merge", "default", "--into", "Dario"])
+        self.assertEqual(code, 0, out)
+        data = iv.progress_for(slug, "Dario")
+        self.assertEqual(data["sessions"], 2)
+        self.assertEqual(data["total_minutes"], 75)
+        self.assertEqual(len(data["concepts"]), 1)
+        self.assertEqual(json.loads(out)["alias_registrato"], {"default": "Dario"})
+        self.assertFalse((iv.PROGRESS_DIR / "default").exists())
+
+    def test_dopo_il_merge_il_nome_vecchio_scrive_nel_profilo_nuovo(self):
+        """Un agente che omette --learner non deve ricreare il profilo assorbito."""
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Dario"])
+        run(["log", "--topic", slug, "--minutes", "10"])
+        run(["learner", "merge", "default", "--into", "Dario"])
+        run(["log", "--topic", slug, "--minutes", "20"])  # nessun --learner
+        self.assertEqual(iv.progress_for(slug, "default")["total_minutes"], 60)
+        self.assertEqual(iv.learner_profiles(), ["Dario"])
+        self.assertTrue((iv.PROGRESS_DIR / "Dario" / "DIARIO.md").exists())
+
+    def test_merge_conserva_la_scheda_piu_avanzata(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--concept", "Bayes", "--grade", "4"])
+        for _ in range(2):
+            run(["log", "--topic", slug, "--minutes", "10", "--concept", "Bayes", "--grade", "5",
+                 "--learner", "Dario"])
+        run(["learner", "merge", "default", "--into", "Dario"])
+        card = iv.progress_for(slug, "Dario")["concepts"][iv.key_of("Bayes")]
+        self.assertEqual(card["reps"], 2)
+        self.assertGreaterEqual(card["interval"], 6)
+
+    def test_merge_rifiuta_lo_stesso_profilo(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Dario"])
+        code, out = run(["learner", "merge", "dario", "--into", "Dario"])
+        self.assertEqual(code, 1)
+        self.assertIn("stesso profilo", json.loads(out)["error"])
+
+    def test_merge_senza_progressi_avvisa(self):
+        self.crea_completo("Probabilita")
+        code, out = run(["learner", "merge", "nessuno", "--into", "Dario"])
+        self.assertEqual(code, 1)
+        self.assertIn("nessuno", json.loads(out)["error"])
+
+    def test_un_nuovo_allievo_si_crea_col_primo_log(self):
+        """Per un secondo studente basta dichiararlo: non c'e' nulla da registrare a mano."""
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["log", "--topic", slug, "--minutes", "40", "--summary", "Modulo 1",
+                         "--concept", "Bayes", "--grade", "4", "--learner", "Marco Rossi"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["learner"], "Marco Rossi")
+        profile = iv.PROGRESS_DIR / "Marco Rossi"
+        self.assertTrue((profile / f"{slug}.json").exists())
+        self.assertTrue((profile / "DIARIO.md").exists())
+        self.assertIn("Marco Rossi", (profile / "DIARIO.md").read_text(encoding="utf-8"))
+
+    def test_due_allievi_non_si_mescolano(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "40", "--concept", "Bayes", "--grade", "4",
+             "--learner", "Marco"])
+        run(["log", "--topic", slug, "--minutes", "10", "--concept", "Bayes", "--grade", "2",
+             "--learner", "Giulia"])
+        self.assertEqual(iv.progress_for(slug, "Marco")["total_minutes"], 40)
+        self.assertEqual(iv.progress_for(slug, "Giulia")["total_minutes"], 10)
+        self.assertEqual(iv.progress_for(slug, "Marco")["concepts"][iv.key_of("Bayes")]["last_grade"], 4)
+        self.assertEqual(iv.progress_for(slug, "Giulia")["weak_spots"], ["Bayes"])
+        self.assertEqual(len(iv.learner_profiles()), 2)
+
+    def test_nome_con_maiuscole_diverse_resta_un_profilo(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "15", "--learner", "Marco Rossi"])
+        run(["log", "--topic", slug, "--minutes", "5", "--learner", "marco rossi"])
+        self.assertEqual(iv.learner_profiles(), ["Marco Rossi"])
+        self.assertEqual(iv.progress_for(slug, "marco rossi")["total_minutes"], 20)
+
+    def test_nome_con_caratteri_di_percorso_rifiutato(self):
+        """Un nome relativo scriverebbe fuori da data/progress/: va bloccato."""
+        slug = self.crea_completo("Probabilita")
+        for name in ["../fuori", "a/b", "..\\x"]:
+            code, out = run(["log", "--topic", slug, "--minutes", "5", "--learner", name])
+            self.assertEqual(code, 1, name)
+            self.assertIn("non ammessi", json.loads(out)["error"])
+        # `../fuori` avrebbe scritto in data/fuori, un livello sopra i progressi
+        self.assertFalse((iv.PROGRESS_DIR.parent / "fuori").exists())
+        self.assertFalse(iv.learner_profiles())
+
+    def test_nome_di_soli_punti_rifiutato(self):
+        self.assertEqual(iv.clean_profile_name("Marco Rossi"), "Marco Rossi")
+        self.assertEqual(iv.clean_profile_name("  Marco   Rossi "), "Marco Rossi")
+        scarto = io.StringIO()
+        with contextlib.redirect_stdout(scarto):
+            with self.assertRaises(SystemExit):
+                iv.clean_profile_name("...")
+            with self.assertRaises(SystemExit):
+                iv.clean_profile_name("x" * 61)
+
+    def test_nome_vuoto_resta_anonimo(self):
+        """Chi non vuole dare un nome non deve essere bloccato: profilo `default`."""
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["log", "--topic", slug, "--minutes", "5", "--learner", "   "])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["learner"], "default")
+        self.assertEqual(iv.learner_profiles(), ["default"])
+
+    def test_rinomina_uno_studente_con_merge(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Giulia"])
+        code, out = run(["learner", "merge", "Giulia", "--into", "Giulia Bianchi"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(iv.progress_for(slug, "Giulia")["total_minutes"], 10)
+        self.assertEqual(iv.learner_profiles(), ["Giulia Bianchi"])
+        self.assertEqual(iv.profile_aliases(), {"Giulia": "Giulia Bianchi"})
+
+    def test_rename_sposta_i_progressi_e_lascia_un_alias(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--concept", "Bayes", "--grade", "5",
+             "--learner", "Marco Rossi"])
+        code, out = run(["learner", "rename", "Marco Rossi", "--to", "Marco Rosi"])
+        self.assertEqual(code, 0, out)
+        payload = json.loads(out)
+        self.assertEqual((payload["da"], payload["a"]), ("Marco Rossi", "Marco Rosi"))
+        self.assertEqual(iv.learner_profiles(), ["Marco Rosi"])
+        self.assertTrue((iv.PROGRESS_DIR / "Marco Rosi" / "DIARIO.md").exists())
+        # il vecchio nome continua a scrivere nel profilo giusto
+        run(["log", "--topic", slug, "--minutes", "5", "--learner", "Marco Rossi"])
+        self.assertEqual(iv.progress_for(slug, "Marco Rossi")["total_minutes"], 35)
+        self.assertEqual(iv.learner_profiles(), ["Marco Rosi"])
+        salvato = json.loads((iv.PROGRESS_DIR / "Marco Rosi" / f"{slug}.json").read_text(encoding="utf-8"))
+        self.assertEqual(salvato["learner"], "Marco Rosi")
+
+    def test_rename_di_solo_maiuscole(self):
+        """Su Windows una rinomina che cambia solo maiuscole puo' fallire: si passa da un nome temporaneo."""
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Giulia"])
+        code, out = run(["learner", "rename", "Giulia", "--to", "GIULIA"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(iv.learner_profiles(), ["GIULIA"])
+        self.assertEqual(iv.progress_for(slug, "giulia")["total_minutes"], 10)
+
+    def test_rename_rifiuta_se_la_destinazione_ha_progressi(self):
+        """Due profili con progressi non si rinominano insieme: e' un'unione, va chiesta come tale."""
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Luca"])
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Marco"])
+        code, out = run(["learner", "rename", "Luca", "--to", "Marco"])
+        self.assertEqual(code, 1)
+        self.assertIn("learner merge", json.loads(out)["error"])
+        self.assertEqual(sorted(iv.learner_profiles()), ["Luca", "Marco"])
+
+    def test_rename_di_un_profilo_inesistente(self):
+        self.crea_completo("Probabilita")
+        code, out = run(["learner", "rename", "Nessuno", "--to", "Qualcuno"])
+        self.assertEqual(code, 1)
+        self.assertIn("Nessuno", json.loads(out)["error"])
+
+    def test_delete_senza_conferma_non_cancella_niente(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Marco"])
+        code, out = run(["learner", "delete", "Marco"])
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["sessioni"], 1)
+        self.assertEqual(payload["minuti"], 30)
+        self.assertIn("--yes", payload["conferma"])
+        self.assertTrue((iv.PROGRESS_DIR / "Marco").is_dir())
+
+    def test_delete_con_conferma_toglie_profilo_e_alias(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "10", "--learner", "Giulia"])
+        run(["learner", "rename", "Giulia", "--to", "Giulia Bianchi"])
+        code, out = run(["learner", "delete", "Giulia Bianchi", "--yes"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["alias_rimossi"], ["Giulia"])
+        self.assertEqual(iv.learner_profiles(), [])
+        self.assertEqual(iv.profile_aliases(), {})
+        # niente profilo zombie: il vecchio alias riparte da un profilo con il suo nome
+        run(["log", "--topic", slug, "--minutes", "5", "--learner", "Giulia"])
+        self.assertEqual(iv.learner_profiles(), ["Giulia"])
+        self.assertEqual(iv.progress_for(slug, "Giulia")["total_minutes"], 5)
+
+    def test_delete_non_tocca_le_sotto_skill_gli_argomenti_e_gli_altri_profili(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30", "--learner", "Marco"])
+        run(["log", "--topic", slug, "--minutes", "20", "--learner", "Giulia"])
+        code, out = run(["learner", "delete", "Marco", "--yes"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(iv.learner_profiles(), ["Giulia"])
+        self.assertEqual(iv.progress_for(slug, "Giulia")["total_minutes"], 20)
+        self.assertTrue((iv.topic_dir(slug) / "SKILL.md").exists())
+        code, out = run(["validate", slug, "--json"])
+        self.assertEqual(code, 0, out)
+
+    def test_learner_list_mostra_profili_e_alias(self):
+        slug = self.crea_completo("Probabilita")
+        run(["log", "--topic", slug, "--minutes", "30"])
+        run(["log", "--topic", slug, "--minutes", "20", "--learner", "Dario"])
+        code, out = run(["learner", "list", "--json"])
+        payload = json.loads(out)
+        self.assertEqual([r["learner"] for r in payload["profili"]], ["Dario", "default"])
+        code, out = run(["learner", "merge", "default", "--into", "Dario"])
+        code, out = run(["learner", "list", "--json"])
+        payload = json.loads(out)
+        self.assertEqual([r["learner"] for r in payload["profili"]], ["Dario"])
+        self.assertEqual(payload["profili"][0]["minuti"], 50)
+        self.assertEqual(payload["alias"], {"default": "Dario"})
+
+
+class TestLintDiProsa(BaseIV):
+    """Lo schema non vede la scrittura: il lint rende visibile la deriva di qualita'."""
+
+    def lint(self, slug: str) -> list[str]:
+        code, out = run(["validate", slug, "--json"])
+        return [p for p in json.loads(out)["esito"][0]["problemi"] if "avviso" in p]
+
+    def test_carattere_non_latino_viene_segnalato(self):
+        slug = self.crea_completo("Probabilita")
+        percorso = iv.topic_dir(slug) / "percorso.md"
+        percorso.write_text(percorso.read_text(encoding="utf-8") + "\nVedi completarlа frase.", encoding="utf-8")
+        avvisi = self.lint(slug)
+        self.assertTrue(any("U+0430" in a for a in avvisi), avvisi)
+
+    def test_riga_duplicata_viene_segnalata(self):
+        slug = self.crea_completo("Probabilita")
+        percorso = iv.topic_dir(slug) / "percorso.md"
+        percorso.write_text(
+            percorso.read_text(encoding="utf-8") + "\nIl testo rigenerato che ripete la coda della riga." * 2,
+            encoding="utf-8",
+        )
+        self.assertTrue(any("duplicat" in a for a in self.lint(slug)))
+
+    def test_markdown_sbilanciato_viene_segnalato(self):
+        slug = self.crea_completo("Probabilita")
+        glossario = iv.topic_dir(slug) / "glossario.md"
+        glossario.write_text(glossario.read_text(encoding="utf-8") + "\nErrore con backtick spaiato `qui.\n", encoding="utf-8")
+        self.assertTrue(any("markdown sbilanciato" in a for a in self.lint(slug)))
+
+    def test_gli_avvisi_non_bloccano_il_riuso(self):
+        slug = self.crea_completo("Probabilita")
+        percorso = iv.topic_dir(slug) / "percorso.md"
+        percorso.write_text(percorso.read_text(encoding="utf-8") + "\nVedi completarlа frase.", encoding="utf-8")
+        code, out = run(["validate", slug, "--json"])
+        payload = json.loads(out)["esito"][0]
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["valido"])
+        self.assertGreater(payload["avvisi"], 0)
+
+    def test_una_sotto_skill_pulita_non_produce_avvisi(self):
+        slug = self.crea_completo("Probabilita")
+        self.assertEqual(self.lint(slug), [])
+
+
+class TestStileMisurabile(BaseIV):
+    """La promessa "spiegazione semplice" non resta un auspicio: si misura."""
+
+    SEMPLICE = (
+        "Il gatto dorme sul divano. Il cane corre nel parco. Il sole scalda la casa. "
+        "La mamma prepara la cena. Il pane e' caldo."
+    )
+    # 20 parole per frase, tutte corte: lungo ma non difficile
+    LUNGHETTO = (
+        "casa sole pane muro tetto prato ramo foglia vento nube pioggia neve ghiaccio "
+        "monte valle fiume lago ponte strada."
+    )
+    DENSO = (
+        "La rappresentazione distribuita della conoscenza contestuale implica una "
+        "riorganizzazione progressiva delle attivazioni dei nodi interconnessi, cosi' che "
+        "l'elaborazione complessiva emerga dalla interazione non lineare fra i livelli "
+        "successivi dell'architettura stessa, la quale, in funzione della distribuzione "
+        "statistica degli esempi, modifica i propri parametri in modo graduale."
+    )
+
+    def test_leggibilita_distingue_semplice_da_denso(self):
+        semplice = iv.style_metrics(self.SEMPLICE * 4)
+        denso = iv.style_metrics(self.DENSO * 4)
+        self.assertGreater(semplice["gulpease"], denso["gulpease"])
+        self.assertGreater(semplice["gulpease"], 70)
+        self.assertLess(denso["gulpease"], 45)
+
+    def test_metriche_conta_frasi_e_parole(self):
+        metrics = iv.style_metrics("Il gatto dorme. Il cane corre.")
+        self.assertEqual(metrics["frasi"], 2)
+        self.assertEqual(metrics["parole"], 6)
+        self.assertEqual(metrics["frase_piu_lunga"], "Il gatto dorme.")
+
+    def test_righe_di_elenco_contano_come_frasi(self):
+        """Senza questo, le voci di elenco si fondono e le misure mentono."""
+        metrics = iv.style_metrics("- uno due tre\n- quattro cinque sei\n- sette otto nove\n")
+        self.assertEqual(metrics["frasi"], 3)
+
+    def test_il_livello_alza_o_abbassa_l_asticella(self):
+        metrics = iv.style_metrics((self.LUNGHETTO + " ") * 4)
+        self.assertTrue(iv.style_problems(metrics, 1), "20 parole/frase sono troppe per il livello 1")
+        self.assertEqual(iv.style_problems(metrics, 4), [], "per il livello 4 sono accettabili")
+
+    def test_style_command_su_un_testo(self):
+        code, out = run(["style", "--text", self.DENSO, "--level", "2", "--json"])
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["problemi"]["testo"])
+        code, out = run(["style", "--text", self.SEMPLICE * 4, "--level", "2", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["problemi"]["testo"], [])
+
+    def test_style_su_una_sotto_skill(self):
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["style", slug, "--file", "percorso.md"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("Gulpease", out)
+
+    def test_validate_segnala_un_file_denso(self):
+        slug = self.crea_completo("Probabilita")
+        percorso = iv.topic_dir(slug) / "percorso.md"
+        denso = "\n\n".join(self.DENSO for _ in range(15))
+        percorso.write_text(percorso.read_text(encoding="utf-8") + "\n" + denso, encoding="utf-8")
+        code, out = run(["validate", slug, "--json"])
+        payload = json.loads(out)["esito"][0]
+        self.assertTrue(any("leggibilita" in p for p in payload["problemi"]), payload["problemi"])
+        self.assertTrue(payload["valido"])
+
+    def test_validate_non_giudica_i_file_corti(self):
+        slug = self.crea_completo("Probabilita")
+        code, out = run(["validate", slug, "--json"])
+        problemi = json.loads(out)["esito"][0]["problemi"]
+        self.assertFalse([p for p in problemi if "leggibilita" in p])
 
 
 class TestCLI(BaseIV):

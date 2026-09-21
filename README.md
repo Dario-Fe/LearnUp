@@ -67,13 +67,20 @@ That separation is the heart of the project: knowledge is regenerable, your prog
   typical mistakes, exercises of increasing difficulty with self-assessment criteria, a final assessment,
   and per-level sources.
 - **Validates before use**: an uncompiled skeleton cannot be activated (the validator blocks placeholders,
-  modules with no verifiable objective, exercises with no solutions).
+  modules with no verifiable objective, exercises with no solutions) and warns about the writing defects
+  agents typically leave behind: non-Latin characters, duplicated lines, broken markdown.
 - **Recognises duplicates**: aliases and merging of similar topics, without losing progress.
 - **Remembers and schedules reviews**: simplified SM-2 spaced repetition on every checked concept.
 - **Keeps a learning diary**: minutes studied, topics going cold, recurring weak spots, what to review now.
+- **Asks your name once** (first session) and keeps progress in one profile per person — under
+  `data/progress/<name>/`, which stays on your machine. Prefer anonymity? The profile is `default`.
+- **Several students on one machine**: just declare them (`--learner "Marco Rossi"`). A new profile is born
+  on the first log with its own diary, while sub-skills stay shared: knowledge is regenerable, progress is not.
 - **Three modes**: self-learner, exam preparation, teaching others (with separate learner profiles).
 - **Declared rigor**: every claim is labelled *well-established / simplified / contested / inference /
   to be verified*, and every sub-skill has a **To be verified** section. No invented sources.
+- **Verifiable simplicity**: each level has numeric readability targets (Gulpease index, words per
+  sentence) checked by `iv.py style` and the validator — so "explain it simply" does not depend on the model.
 
 ---
 
@@ -131,6 +138,7 @@ Nothing to configure: just ask.
 
 | You say | What happens |
 |---|---|
+| *(very first session)* | It asks what to call you — to keep your progress separate, and it stays on your computer. "Keep me anonymous" is a valid answer |
 | *"I want to study the Feynman technique"* | Searches the registry; if the topic is missing it generates the sub-skill, validates it and starts |
 | *"Let's continue the Feynman technique"* | Reuses the saved sub-skill, reads your progress and resumes where you left off |
 | *"Let's prepare for my statistics exam"* | Switches to exam mode: backwards plan, timed mock exams, pass thresholds |
@@ -210,6 +218,7 @@ python scripts/iv.py validate <slug> | --all [--json]
 python scripts/iv.py register <slug> [--self-check "…"] [--force]
 python scripts/iv.py list [--json]               # saved topics
 python scripts/iv.py show <slug>                 # sub-skill files + progress
+python scripts/iv.py style <slug> | --text "…" [--level 2]   # readability (Gulpease) vs level target
 
 # registry maintenance
 python scripts/iv.py alias <slug> --add "alternative name" | --list
@@ -221,6 +230,10 @@ python scripts/iv.py log --topic <slug> --minutes 45 --summary "…" --module 2 
       --concept "concept" --grade 4 --concept "other" --grade 1 --next "…" [--learner name]
 python scripts/iv.py due [--within 7] [--json]   # what to review now
 python scripts/iv.py stats [--write] [--json]    # learning diary (Markdown)
+python scripts/iv.py learner list | --json       # learner profiles with progress and aliases
+python scripts/iv.py learner merge <from> --into <to>   # merge two profiles without losing history
+python scripts/iv.py learner rename <name> --to "<corrected>"   # fix a name (keeps an alias)
+python scripts/iv.py learner delete <name> [--yes]   # without --yes it only previews
 ```
 
 Global options: `--data <folder>` (or the `IV_DATA` environment variable) to keep data outside the skill,
@@ -244,7 +257,7 @@ Global options: `--data <folder>` (or the `IV_DATA` environment variable) to kee
 │   └── schema-sottoskill.md
 ├── scripts/iv.py             # engine: registry, search, validation, progress, reviews
 ├── assets/templates/topic/   # skeleton of a new sub-skill
-├── tests/test_iv.py          # 39 engine tests
+├── tests/test_iv.py          # 54 engine tests
 └── data/
     ├── registry.json         # index (regenerable, not versioned)
     ├── topics/<slug>/        # THE SAVED SUB-SKILLS
@@ -267,7 +280,8 @@ rm -rf data/topics/metodo-feynman && python scripts/iv.py reindex
 ## Extending the system
 
 - **New pedagogical rule** → add it to `references/costituzione.md`, bump `BASE_VERSION` in `scripts/iv.py`:
-  topics with an older version will show up in `iv.py status` as `da_rigenerare`.
+  a new **major** puts existing topics in `da_rigenerare` (their content must be redone), a new **minor**
+  lists them in `cornice_aggiornabile` (optional enrichment, they stay usable).
 - **New mode** (corporate course, tutoring…) → `references/modalita.md` + the `MODES` tuple in `iv.py`.
 - **New sub-skill file** (flashcards, mind maps…) → template in `assets/templates/topic/`,
   `REQUIRED_FILES` in `iv.py`, section in `references/schema-sottoskill.md`.
@@ -278,7 +292,7 @@ rm -rf data/topics/metodo-feynman && python scripts/iv.py reindex
 
 ```bash
 python -m unittest discover -s tests -t tests
-python scripts/iv.py validate --all     # health of every sub-skill
+python scripts/iv.py validate --all     # health of every sub-skill + prose lint + readability
 ```
 
 ---
@@ -378,8 +392,10 @@ replace the copyright holder in `LICENSE` with your own name.
 
 ## Known limitations
 
-- **Validation guarantees structure and minimums, not the truth of the content.** Quality depends on the
-  generating agent: that is why reliability labels exist, and why every sub-skill has a *To be verified* section.
+- **Validation guarantees structure and minimums, not the truth or the prose of the content.** Quality
+  depends on the generating agent: that is why reliability labels exist, why every sub-skill has a
+  *To be verified* section, and why the frame requires a proofreading pass (the prose lint only catches
+  mechanical artefacts, not typos).
 - **Search is lexical**, not semantic: ambiguous cases are decided by the agent, which asks you to confirm.
 - **Spaced repetition is simplified SM-2**, one item per concept (no multiple cards).
 - **Sub-skills live inside the skill** rather than being top-level skills, so they do not pollute the agent's
@@ -399,7 +415,8 @@ for it explicitly: *"use the insegnante-virtuale skill"*. After installing it, s
 (the files in `references/`) is in Italian.
 
 **I updated the rules — do I lose my progress?** No. Progress lives in `data/progress/`, separate from
-knowledge. Bumping `BASE_VERSION` flags topics as `da_rigenerare` so they can be realigned.
+knowledge. A new **major** of `BASE_VERSION` flags topics as `da_rigenerare` so they can be realigned;
+with a new minor they stay usable and show up as `cornice_aggiornabile`.
 
 **Can two people study with it?** Yes: `--learner <name>` on `log`, `due` and `stats` keeps profiles separate.
 
@@ -417,7 +434,8 @@ Issues and pull requests are welcome. Before opening a PR:
 
 1. `python -m unittest discover -s tests -t tests` (all green);
 2. `python scripts/iv.py validate --all` (no broken sub-skill);
-3. if you change the frame, bump `BASE_VERSION` and update the affected references.
+3. if you change the frame, bump `BASE_VERSION` and update the affected references (major = content to
+   redo, minor = optional update).
 
 If you add an example topic, make it pass the validator: incomplete examples do not get in.
 

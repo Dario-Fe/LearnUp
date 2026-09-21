@@ -126,6 +126,21 @@ def slugify(text: str) -> str:
     return norm(text).replace(" ", "-") or "argomento"
 
 
+def split_prereqs(values: list[str]) -> list[str]:
+    """Normalizza i prerequisiti: una voce per prerequisito.
+
+    Gli agenti scrivono a volte `--prereq "a; b"`: senza questo split restano
+    un'unica stringa e la mappa del corso li mostra fusi in una voce sola.
+    """
+    out: list[str] = []
+    for value in values or []:
+        for piece in str(value).split(";"):
+            piece = piece.strip(" .")
+            if piece and piece not in out:
+                out.append(piece)
+    return out
+
+
 def similarity(query: str, target: str) -> float:
     """Similarità 0..1 fra due etichette di argomento."""
     qa, qb = tokens(query), tokens(target)
@@ -152,6 +167,30 @@ def now() -> str:
 
 def sha1_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def version_major(version) -> str | None:
+    """Parte major di una versione ('1.2.3' -> '1', 'v1.0' -> '1'). None se illeggibile."""
+    match = re.match(r"\s*v?(\d+)", str(version or ""))
+    return match.group(1) if match else None
+
+
+def frame_state(entry: dict) -> dict:
+    """Confronta la cornice di una sotto-skill con quella corrente.
+
+    Semantica dichiarata nelle reference: **major** = regole che invalidano i
+    contenuti generati (vanno rigenerati); **minor** = aggiunte compatibili
+    (aggiornamento opzionale, la sotto-skill resta usabile cosi' com'e').
+    Una versione assente o illeggibile conta come da rigenerare: provenienza
+    ignota, meglio ricontrollare che fidarsi.
+    """
+    stored = entry.get("base_version")
+    major_now, major_then = version_major(BASE_VERSION), version_major(stored)
+    return {
+        "versione": stored,
+        "da_rigenerare": major_then != major_now,
+        "aggiornabile": major_then == major_now and str(stored) != BASE_VERSION,
+    }
 
 
 # ---------------------------------------------------------------- io
@@ -439,7 +478,7 @@ def cmd_create(args) -> None:
     meta["key"] = values["KEY"]
     meta["level"] = args.level
     meta["mode"] = args.mode
-    meta["prereqs"] = list(args.prereq)
+    meta["prereqs"] = split_prereqs(args.prereq)
     meta["tags"] = list(args.tag)
     meta["aliases"] = list(args.alias)
     meta["created"] = meta["updated"] = today()
@@ -505,6 +544,254 @@ def count_table_rows(text: str, after_heading: str | None = None) -> int:
 def has_placeholder_issues(slug: str) -> bool:
     issues = validate_topic(slug)["problemi"]
     return any(p["livello"] == "errore" for p in issues)
+
+
+# Obiettivi di leggibilita' per livello dichiarato (il "dosatore" della cornice).
+# Gulpease: >=80 molto facile, 60-79 facile, 40-59 difficile, <40 molto difficile.
+# "frasi_lunghe" = percentuale massima di frasi oltre 30 parole.
+STYLE_TARGETS = {
+    1: {"gulpease": 60.0, "parole_frase": 16.0, "frasi_lunghe": 10},
+    2: {"gulpease": 60.0, "parole_frase": 16.0, "frasi_lunghe": 10},
+    3: {"gulpease": 50.0, "parole_frase": 20.0, "frasi_lunghe": 20},
+    4: {"gulpease": 40.0, "parole_frase": 24.0, "frasi_lunghe": 30},
+}
+
+LONG_SENTENCE = 30
+MIN_UNITS_FOR_STYLE = 12
+
+_WORD = re.compile(r"[A-Za-zÀ-ÿ']+")
+
+
+def style_units(text: str) -> list[str]:
+    """Frasi misurabili: via codice, titoli e righe di separazione; una cella per riga."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"`[^`]*`", " parola ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"^\s*#{1,6}.*$", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\|?[\s:|-]+\|?\s*$", " ", text, flags=re.MULTILINE)
+    text = text.replace("|", ". ")
+    text = re.sub(r"\*\*|\*|_", "", text)
+    units = []
+    for line in text.splitlines():
+        # in Markdown ogni riga e' un'unita' di senso: senza questo, le voci di
+        # elenco si fondono con la riga successiva e le misure mentono.
+        line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line.strip())
+        line = re.sub(r"\s+", " ", line).strip()
+        if len(line) <= 2:
+            continue
+        for part in re.split(r"(?<=[.!?…])\s+", line):
+            part = part.strip()
+            if len(part) > 2:
+                units.append(part)
+    return units
+
+
+def style_metrics(text: str) -> dict:
+    """Leggibilita' misurabile: indice Gulpease, parole per frase, frasi troppo lunghe.
+
+    Misura la *scrittura*, non la verita' ne' la profondita': serve a rendere
+    verificabile la promessa "spiegazione semplice", che altrimenti resta un
+    auspicio e dipende interamente dal modello che genera.
+    """
+    units = style_units(text)
+    lengths = [len(_WORD.findall(unit)) for unit in units]
+    words = sum(lengths)
+    if not units or not words:
+        return {"frasi": 0, "parole": 0, "gulpease": None, "parole_frase": None,
+                "frasi_lunghe_pct": 0, "virgole_frase": 0,
+                "frase_piu_lunga": "", "parole_frase_piu_lunga": 0}
+    letters = sum(len("".join(_WORD.findall(unit))) for unit in units)
+    longest = max(units, key=lambda unit: len(_WORD.findall(unit)))
+    long_count = sum(1 for n in lengths if n > LONG_SENTENCE)
+    return {
+        "frasi": len(units),
+        "parole": words,
+        "gulpease": round(89 + (300 * len(units) - 10 * letters) / words, 1),
+        "parole_frase": round(words / len(units), 1),
+        "frasi_lunghe_pct": round(100 * long_count / len(units)),
+        "virgole_frase": round(sum(unit.count(",") for unit in units) / len(units), 2),
+        "frase_piu_lunga": " ".join(longest.split())[:120],
+        "parole_frase_piu_lunga": len(_WORD.findall(longest)),
+    }
+
+
+def style_problems(metrics: dict, level: int) -> list[str]:
+    """Cosa non rispetta l'obiettivo di leggibilita' del livello dichiarato."""
+    target = STYLE_TARGETS.get(int(level or 2), STYLE_TARGETS[2])
+    if not metrics.get("frasi") or metrics.get("gulpease") is None:
+        return []
+    out = []
+    if metrics["gulpease"] < target["gulpease"]:
+        out.append(
+            f"leggibilita' {metrics['gulpease']} < {target['gulpease']} (Gulpease) per il livello {level}: "
+            f"{metrics['parole_frase']} parole per frase di media"
+        )
+    if metrics["parole_frase"] > target["parole_frase"] and metrics["gulpease"] >= target["gulpease"]:
+        out.append(
+            f"frasi lunghe ({metrics['parole_frase']} parole/frase, obiettivo "
+            f"<= {target['parole_frase']}): spezza le subordinate in frasi autonome"
+        )
+    if metrics["frasi_lunghe_pct"] > target["frasi_lunghe"]:
+        out.append(
+            f"{metrics['frasi_lunghe_pct']}% di frasi oltre {LONG_SENTENCE} parole "
+            f"(obiettivo <= {target['frasi_lunghe']}%)"
+        )
+    if out:
+        out.append(f"frase piu' lunga ({metrics['parole_frase_piu_lunga']} parole): «{metrics['frase_piu_lunga']}»")
+    return out
+
+
+def cmd_style(args) -> None:
+    """Misura la leggibilita' di una sotto-skill o di un testo (bozza di spiegazione)."""
+    if args.text:
+        label, level = "testo", args.level or 2
+        metrics = style_metrics(args.text)
+        files = [(label, metrics)]
+    else:
+        if not args.slug:
+            die("Indica uno slug oppure usa --text \"<spiegazione>\"")
+        reg = sync_from_disk(load_registry())
+        entry = find_entry(reg, args.slug)
+        if not entry:
+            die(f"Argomento '{args.slug}' non nel registro.")
+        level = args.level or entry.get("level") or 2
+        names = [args.file] if args.file else [
+            n for n in REQUIRED_FILES if n not in ("SKILL.md", "meta.json")
+        ]
+        files = []
+        for name in names:
+            path = topic_dir(args.slug) / name
+            if not path.exists():
+                die(f"File assente: {name}")
+            files.append((name, style_metrics(read_text(path))))
+
+    payload = {
+        "ok": True,
+        "criterio": STYLE_TARGETS[int(level or 2)],
+        "livello": int(level or 2),
+        "misure": [{"file": name, **metrics} for name, metrics in files],
+        "problemi": {name: style_problems(metrics, level) for name, metrics in files},
+    }
+    payload["ok"] = not any(payload["problemi"][name] for name, _ in files)
+    if args.json:
+        emit(payload, code=0 if payload["ok"] else 1)
+
+    lines = [
+        f"# Leggibilita' (livello {level}: Gulpease >= {payload['criterio']['gulpease']}, "
+        f"<= {payload['criterio']['parole_frase']} parole/frase)",
+        "",
+        "| File | Gulpease | Parole/frase | Frasi | >30 parole | Virgole/frase |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, metrics in files:
+        if not metrics["frasi"]:
+            lines.append(f"| {name} | — | — | 0 | — | — |")
+            continue
+        lines.append(
+            f"| {name} | {metrics['gulpease']} | {metrics['parole_frase']} | {metrics['frasi']} | "
+            f"{metrics['frasi_lunghe_pct']}% | {metrics['virgole_frase']} |"
+        )
+    for name, metrics in files:
+        for problem in payload["problemi"][name]:
+            lines.append(f"- {name}: {problem}")
+    if payload["ok"]:
+        lines.append("- Tutto entro l'obiettivo di leggibilita' del livello.")
+    emit(payload, as_text="\n".join(lines), code=0 if payload["ok"] else 1)
+
+
+# caratteri fuori dal latino: quasi sempre refusi dell'agente, non contenuto
+SUSPECT_RANGES = (
+    (0x0370, 0x03FF), (0x0400, 0x04FF), (0x0590, 0x05FF),
+    (0x0600, 0x06FF), (0x3000, 0x303F), (0x4E00, 0x9FFF),
+)
+
+# parole funzionali straniere che un modello lascia dentro la prosa italiana
+FOREIGN_WORDS = ("through", "because", "which", "must", "there", "instead", "however", "between")
+
+
+class ProseLint:
+    """Refusi che lo schema non vede: lingua, ripetizioni, markdown rotto.
+
+    Il validatore controlla la struttura; questo lint controlla la scrittura.
+    Sono avvisi, non errori: non bloccano il riuso, ma rendono visibile il
+    calo di qualita' di un modello piccolo o distratto.
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def run(self, name: str, text: str) -> None:
+        prose = self._strip_code(text)
+        self._non_latin(name, prose)
+        self._duplicate_lines(name, text)
+        self._truncated_line(name, text)
+        self._repeated_words(name, prose)
+        self._repeated_fragment(name, prose)
+        self._unbalanced_markdown(name, text)
+        self._foreign_words(name, prose)
+
+    @staticmethod
+    def _strip_code(text: str) -> str:
+        text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+        return re.sub(r"`[^`]*`", " ", text)
+
+    def _non_latin(self, name: str, prose: str) -> None:
+        found: dict[str, int] = {}
+        for char in prose:
+            point = ord(char)
+            if any(lo <= point <= hi for lo, hi in SUSPECT_RANGES):
+                found[char] = found.get(char, 0) + 1
+        if found:
+            shown = ", ".join(f"{c} (U+{ord(c):04X})" for c in sorted(found))
+            self.messages.append(f"{name}: caratteri non latini in prosa: {shown}")
+
+    def _duplicate_lines(self, name: str, text: str) -> None:
+        previous = ""
+        for index, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped and len(stripped) > 20 and stripped == previous:
+                self.messages.append(f"{name}: riga {index} duplicata di seguito a riga {index - 1}")
+                return
+            previous = stripped
+
+    def _truncated_line(self, name: str, text: str) -> None:
+        """Riga che ripete la coda della precedente: testo rigenerato due volte."""
+        previous = ""
+        for index, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if len(stripped) >= 18 and previous and stripped != previous and stripped in previous:
+                self.messages.append(
+                    f"{name}: riga {index} ripete la coda della riga {index - 1} (testo duplicato)"
+                )
+                return
+            if stripped:
+                previous = stripped
+
+    def _repeated_words(self, name: str, prose: str) -> None:
+        for match in re.finditer(r"\b(\w{4,})\s+\1\b", prose, flags=re.IGNORECASE):
+            self.messages.append(f"{name}: parola ripetuta «{match.group(1)} {match.group(1)}»")
+            return
+
+    def _repeated_fragment(self, name: str, prose: str) -> None:
+        pattern = r"\b((?:\w+\s+){2,6}\w+)\s+\1"
+        for match in re.finditer(pattern, prose, flags=re.IGNORECASE):
+            fragment = " ".join(match.group(1).split())
+            self.messages.append(f"{name}: frammento ripetuto «{fragment}»")
+            return
+
+    def _unbalanced_markdown(self, name: str, text: str) -> None:
+        problems = []
+        if text.count("`") % 2:
+            problems.append(f"{text.count('`')} backtick")
+        if text.count("**") % 2:
+            problems.append(f"{text.count('**')} «**»")
+        if problems:
+            self.messages.append(f"{name}: markdown sbilanciato ({', '.join(problems)})")
+
+    def _foreign_words(self, name: str, prose: str) -> None:
+        for word in FOREIGN_WORDS:
+            if re.search(rf"\b{word}\b", prose, flags=re.IGNORECASE):
+                self.messages.append(f"{name}: parola straniera rimasta in prosa: «{word}»")
 
 
 def validate_topic(slug: str) -> dict:
@@ -598,6 +885,26 @@ def validate_topic(slug: str) -> dict:
 
     if meta.get("mode") not in MODES:
         warn(f"meta.json: mode '{meta.get('mode')}' non fra {MODES}")
+    if meta.get("prereqs") and not isinstance(meta["prereqs"], list):
+        warn("meta.json: 'prereqs' dovrebbe essere una lista di prerequisiti distinti")
+    elif isinstance(meta.get("prereqs"), list):
+        for item in meta["prereqs"]:
+            if isinstance(item, str) and ";" in item:
+                warn(f"meta.json: prerequisito multiplo in una voce sola «{item}»")
+
+    lint = ProseLint()
+    for name, text in texts.items():
+        lint.run(name, text)
+    for message in lint.messages:
+        warn(message)
+
+    level = meta.get("level") or 2
+    for name, text in texts.items():
+        metrics = style_metrics(text)
+        if metrics["frasi"] < MIN_UNITS_FOR_STYLE:
+            continue  # un glossario o una griglia corta non si giudicano sulla media
+        for problem in style_problems(metrics, level):
+            warn(f"{name}: {problem}")
 
     hash_source = "".join(texts.get(name, "") for name in sorted(texts) if name != "meta.json")
     return {
@@ -781,8 +1088,137 @@ def cmd_reindex(args) -> None:
 
 # ---------------------------------------------------------------- progressi
 
+# etichette che descrivono la sessione, non un contenuto da ripassare
+SESSION_MARKERS = (
+    "fine sessione", "chiusura sessione", "sessione conclusa", "sessione completata",
+    "sessione completa", "avvio percorso", "inizio percorso", "avvio del percorso",
+    "inizio del percorso", "avvio corso", "inizio corso", "fine corso", "riepilogo",
+    "ripasso generale", "prima sessione",
+)
+
+# parole che non rendono "concetto" un'etichetta di sessione
+SESSION_GENERIC = {
+    "modulo", "moduli", "corso", "percorso", "sessione", "sessione", "parte", "parti",
+    "lezione", "lezioni", "completato", "completati", "completata", "completate",
+    "concluso", "conclusi", "chiuso", "chiusi", "fatto", "fatta", "svolto", "svolta",
+    "terminato", "terminata", "nuovo", "nuova", "primo", "prima", "secondo", "seconda",
+    "terzo", "terza", "quarto", "quinto", "tutto", "tutti", "tutte", "oggi", "finale",
+}
+
+
+def session_marker(name: str) -> str | None:
+    """Se l'etichetta descrive la sessione invece di un contenuto, la marca.
+
+    Serve a difendere la ripetizione spaziata: 'fine sessione: moduli 1-3'
+    registrato come concetto crea una lacuna finta e un ripasso inutile.
+    """
+    flat = " ".join(norm(name).split())
+    if not flat:
+        return None
+    for marker in SESSION_MARKERS:
+        if marker not in flat:
+            continue
+        residue = [
+            word for word in flat.replace(marker, " ").split()
+            if word not in STOPWORDS and word not in SESSION_GENERIC and not word.isdigit()
+        ]
+        if not residue:
+            return marker
+    return None
+
+
+def profiles_file() -> Path:
+    """Alias dei profili allievo (`default` -> `Dario`) usati dopo un'unione."""
+    return PROGRESS_DIR / ".profiles.json"
+
+
+def profile_aliases() -> dict[str, str]:
+    data = read_json(profiles_file(), {})
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def resolve_learner(learner: str) -> str:
+    """Nome canonico del profilo: segue gli alias registrati da `iv.py learner merge`.
+
+    Serve a non far ripartire i progressi da zero: dopo aver unito `default` in
+    `Dario`, un agente che omette `--learner` deve continuare a scrivere in `Dario`.
+    """
+    name = (learner or "default").strip() or "default"
+    aliases = {key.casefold(): value for key, value in profile_aliases().items()}
+    for _ in range(5):
+        target = aliases.get(name.casefold())
+        if not target or target.casefold() == name.casefold():
+            break
+        name = target
+    return name
+
+
+# caratteri che non possono stare in un nome di cartella (o che aprono percorsi)
+UNSAFE_PROFILE = re.compile(r'[\\/:*?"<>|]')
+
+
+def clean_profile_name(name: str) -> str:
+    """Nome profilo leggibile e sicuro come nome di cartella.
+
+    Spazi e accenti sono ammessi ('Marco Rossi' e' un nome normale); separatori
+    di percorso e metacaratteri no, altrimenti `--learner ..\\x` scriverebbe
+    fuori da `data/progress/`.
+    """
+    cleaned = re.sub(r"\s+", " ", str(name or "")).strip().strip(".")
+    if not cleaned:
+        die("Nome profilo vuoto: passane uno come `--learner \"Marco Rossi\"`.")
+    if UNSAFE_PROFILE.search(cleaned):
+        die(
+            f"Nome profilo '{name}' contiene caratteri non ammessi (\\ / : * ? \" < > |): "
+            "usane uno semplice, anche con spazi."
+        )
+    if len(cleaned) > 60:
+        die(f"Nome profilo troppo lungo ({len(cleaned)} caratteri, massimo 60).")
+    return cleaned
+
+
 def learner_dir(learner: str) -> Path:
-    return PROGRESS_DIR / learner
+    """Cartella del profilo allievo.
+
+    Segue gli alias e riusa un profilo esistente ignorando maiuscole e spazi:
+    'Dario', 'dario' e ' Dario ' sono la stessa persona, non tre profili con
+    progressi separati.
+    """
+    name = resolve_learner(learner)
+    cleaned = clean_profile_name(name)
+    if PROGRESS_DIR.is_dir():
+        for path in sorted(PROGRESS_DIR.iterdir()):
+            if path.is_dir() and path.name.casefold() == cleaned.casefold():
+                return path
+    return PROGRESS_DIR / cleaned
+
+
+def learner_profiles() -> list[str]:
+    """Profili che hanno gia' dei progressi su disco."""
+    if not PROGRESS_DIR.is_dir():
+        return []
+    return sorted(p.name for p in PROGRESS_DIR.iterdir() if p.is_dir())
+
+
+def other_profiles(learner: str, slug: str | None = None) -> list[dict]:
+    """Profili diversi da quello selezionato, con quanti progressi contengono.
+
+    Serve a rendere visibile uno sbaglio frequente degli agenti: registrare con
+    un nome allievo diverso e poi leggere i progressi con quello di default.
+    """
+    selected = learner_dir(learner).name
+    found = []
+    for name in learner_profiles():
+        if name == selected:
+            continue
+        folder = PROGRESS_DIR / name
+        if slug is None:
+            count = len(list(folder.glob("*.json")))
+        else:
+            count = 1 if (folder / f"{slug}.json").exists() else 0
+        if count:
+            found.append({"learner": name, "argomenti": count})
+    return found
 
 
 def progress_path(slug: str, learner: str) -> Path:
@@ -796,6 +1232,7 @@ def blank_progress(slug: str, learner: str) -> dict:
         "level": None,
         "created": today(),
         "last_session": "",
+        "mode": None,
         "total_minutes": 0,
         "sessions": 0,
         "modules_seen": [],
@@ -846,7 +1283,8 @@ def sm2(card: dict, grade: int) -> dict:
 
 def cmd_log(args) -> None:
     reg = sync_from_disk(load_registry())
-    if not find_entry(reg, args.topic):
+    entry = find_entry(reg, args.topic)
+    if not entry:
         die(f"Argomento '{args.topic}' non nel registro: crealo prima con `iv.py create`.")
     data = progress_for(args.topic, args.learner)
     data["sessions"] = int(data.get("sessions", 0)) + 1
@@ -858,14 +1296,21 @@ def cmd_log(args) -> None:
         # Un agente puo' dimenticare --level alla prima sessione: eredita il
         # livello fissato alla creazione dell'argomento, cosi' i progressi
         # restano leggibili senza dover reinterpretare il meta.json.
-        data["level"] = (find_entry(reg, args.topic) or {}).get("level")
+        data["level"] = entry.get("level")
+    # Stessa cosa per la modalita': senza ereditarla il diario diceva `null`
+    # per sessioni condotte in modalita' docenza o esame.
+    if args.mode:
+        data["mode"] = args.mode
+    elif data.get("mode") is None:
+        data["mode"] = entry.get("mode")
+    effective_mode = data.get("mode")
     if args.module and args.module not in data["modules_seen"]:
         data["modules_seen"].append(args.module)
     data["log"].append(
         {
             "date": today(),
             "ora": now().split(" ")[1],
-            "modalita": args.mode,
+            "modalita": effective_mode,
             "minuti": int(args.minutes or 0),
             "modulo": args.module or "",
             "sintesi": args.summary or "",
@@ -880,6 +1325,14 @@ def cmd_log(args) -> None:
         die("Ogni --concept richiede un --grade corrispondente (0-5).")
     scheduled = []
     for name, grade in zip(concepts, grades):
+        marker = session_marker(name)
+        if marker:
+            die(
+                f"«{name}» descrive la sessione, non un concetto da ripassare ({marker}). "
+                "Registra i contenuti verificati con --concept (es. 'previsione della parola "
+                "successiva') e la sintesi della sessione con --summary: le etichette di "
+                "sessione inquinano lacune e ripetizione spaziata."
+            )
         key = key_of(name) or slugify(name)
         card = data["concepts"].get(key) or {"name": name}
         card["name"] = name
@@ -896,16 +1349,22 @@ def cmd_log(args) -> None:
     if args.all_strong and prossimi:
         data["weak_spots"] = [w for w in data["weak_spots"] if w not in prossimi]
         write_progress(args.topic, data, args.learner)
+    # Il diario e' un file derivato: si rigenera dai progressi, come il registro.
+    # Cosi' non resta indietro se l'agente si dimentica `stats --write`.
+    diary = write_diary(args.learner)
+    resolved = learner_dir(args.learner).name
     emit(
         {
             "ok": True,
             "topic": args.topic,
-            "learner": args.learner,
+            "learner": resolved,   # profilo reale su disco (alias e varianti risolte)
             "sessione": data["sessions"],
             "minuti_totali": data["total_minutes"],
+            "modalita": effective_mode,
             "programmati": scheduled,
             "da_ripassare_oggi": prossimi,
             "file": str(progress_path(args.topic, args.learner)),
+            "diario": str(diary),
         }
     )
 
@@ -943,7 +1402,7 @@ def due_items(learner: str, within: int) -> dict:
             argomenti.append({"topic": slug, "ultima_sessione": last, "giorni_fa": giorni})
     concetti.sort(key=lambda c: c["scadenza"])
     argomenti.sort(key=lambda a: a["giorni_fa"], reverse=True)
-    return {"ok": True, "learner": learner, "entro_il": limit,
+    return {"ok": True, "learner": learner_dir(learner).name, "entro_il": limit,
             "concetti_da_ripassare": concetti, "argomenti_stagnanti": argomenti}
 
 
@@ -966,9 +1425,10 @@ def cmd_due(args) -> None:
     emit(payload, as_text="\n".join(lines))
 
 
-def cmd_stats(args) -> None:
+def build_diary(learner: str, within: int) -> dict:
+    """Compone il diario a partire dai progressi: usato sia da `stats` sia da `log`."""
     reg = sync_from_disk(load_registry())
-    data_by_slug = {d.get("slug"): d for d in all_progress(args.learner)}
+    data_by_slug = {d.get("slug"): d for d in all_progress(learner)}
     rows, total_minutes, total_sessions, cards = [], 0, 0, 0
     weak_counter: dict[str, int] = {}
     stale = []
@@ -1003,11 +1463,11 @@ def cmd_stats(args) -> None:
         if raffreddato:
             stale.append(f"{entry['slug']} ({last})")
 
-    due = due_items(args.learner, args.within)
+    due = due_items(learner, within)
     top_weak = sorted(weak_counter.items(), key=lambda kv: kv[1], reverse=True)[:5]
 
     lines = [
-        f"# Diario di apprendimento — {args.learner}",
+        f"# Diario di apprendimento — {learner}",
         "",
         f"_Aggiornato: {now()}_",
         "",
@@ -1019,7 +1479,7 @@ def cmd_stats(args) -> None:
         f"| Sessioni registrate | {total_sessions} |",
         f"| Minuti studiati | {total_minutes} |",
         f"| Concetti tracciati | {cards} |",
-        f"| Concetti da ripassare (entro {args.within}g) | {len(due['concetti_da_ripassare'])} |",
+        f"| Concetti da ripassare (entro {within}g) | {len(due['concetti_da_ripassare'])} |",
         "",
         "## Argomenti",
         "",
@@ -1046,20 +1506,30 @@ def cmd_stats(args) -> None:
         lines.append(f"- Le lacune ricorrenti ({', '.join(n for n, _ in top_weak[:3])}) meritano una sotto-skill di prerequisito.")
     if not lines[-1].startswith("-"):
         lines.append("- Nessun intervento richiesto: continua il percorso previsto.")
-    report = "\n".join(lines) + "\n"
+    return {
+        "learner": learner, "rows": rows, "total_minutes": total_minutes,
+        "total_sessions": total_sessions, "top_weak": top_weak, "stale": stale,
+        "due": due, "report": "\n".join(lines) + "\n",
+    }
 
-    destination = None
-    if args.write:
-        destination = learner_dir(args.learner) / "DIARIO.md"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(report, encoding="utf-8")
 
+def write_diary(learner: str, within: int = 7) -> Path:
+    """Scrive `DIARIO.md`: file derivato, rigenerabile dai progressi."""
+    destination = learner_dir(learner) / "DIARIO.md"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(build_diary(learner, within)["report"], encoding="utf-8")
+    return destination
+
+
+def cmd_stats(args) -> None:
+    diary = build_diary(args.learner, args.within)
+    destination = write_diary(args.learner, args.within) if args.write else None
     if args.json:
-        emit({"ok": True, "learner": args.learner, "argomenti": rows,
-              "minuti_totali": total_minutes, "sessioni": total_sessions,
-              "lacune_ricorrenti": top_weak, "riassunto": report,
+        emit({"ok": True, "learner": learner_dir(args.learner).name, "argomenti": diary["rows"],
+              "minuti_totali": diary["total_minutes"], "sessioni": diary["total_sessions"],
+              "lacune_ricorrenti": diary["top_weak"], "riassunto": diary["report"],
               "scritto_in": str(destination) if destination else None})
-    emit({"ok": True}, as_text=report + (f"\n_Diario salvato in:_ `{destination}`\n" if destination else ""))
+    emit({"ok": True}, as_text=diary["report"] + (f"\n_Diario salvato in:_ `{destination}`\n" if destination else ""))
 
 
 # ---------------------------------------------------------------- lettura
@@ -1095,19 +1565,31 @@ def cmd_list(args) -> None:
                 "base_version": entry.get("base_version"),
                 "sessioni": progress.get("sessions", 0),
                 "ultima": progress.get("last_session") or "mai",
-                "da_rigenerare": entry.get("base_version") != BASE_VERSION,
+                "da_rigenerare": frame_state(entry)["da_rigenerare"],
+                "cornice_aggiornabile": frame_state(entry)["aggiornabile"],
             }
         )
+    altri = other_profiles(args.learner)
     if args.json:
-        emit({"ok": True, "base_version": BASE_VERSION, "argomenti": rows})
+        emit({"ok": True, "base_version": BASE_VERSION, "learner": learner_dir(args.learner).name,
+              "argomenti": rows, "altri_profili": altri})
     if not rows:
         emit({"ok": True}, as_text="Nessun argomento nel registro: al primo avvio se ne crea uno.")
     lines = ["| Argomento | Slug | Stato | Livello | Sessioni | Ultima | Cornice |", "|---|---|---|---|---|---|---|"]
     for r in rows:
-        flag = "da rigenerare" if r["da_rigenerare"] else r["base_version"]
+        flag = (
+            "da rigenerare" if r["da_rigenerare"]
+            else f"{r['base_version']} (aggiornabile)" if r["cornice_aggiornabile"]
+            else r["base_version"]
+        )
         lines.append(
             f"| {r['title']} | `{r['slug']}` | {r['stato']} | {r['livello']} | {r['sessioni']} | {r['ultima']} | {flag} |"
         )
+    if altri:
+        # Visibilita' sui progressi registrati sotto un altro nome allievo: senza
+        # questa riga la tabella direbbe "0 sessioni, mai" su un argomento studiato.
+        elenco = ", ".join(f"{a['learner']} ({a['argomenti']})" for a in altri)
+        lines += ["", f"_Progressi di altri profili: {elenco}. Usa `--learner <nome>` per vederli._"]
     emit({"ok": True}, as_text="\n".join(lines))
 
 
@@ -1145,24 +1627,272 @@ def cmd_show(args) -> None:
     emit(payload)
 
 
+def merge_cards(left: dict, right: dict) -> dict:
+    """Sceglie la scheda SM-2 piu' avanzata fra due versioni dello stesso concetto.
+
+    Vince chi ha piu' ripetizioni; a parita', chi e' stato ripassato piu' di recente.
+    Unire i progressi non deve mai far *retrocedere* una scadenza.
+    """
+    def rank(card: dict) -> tuple:
+        return (int(card.get("reps", 0)), str(card.get("last_review") or ""))
+
+    winner = left if rank(left) >= rank(right) else right
+    merged = dict(winner)
+    merged["lapses"] = int(left.get("lapses", 0)) + int(right.get("lapses", 0))
+    return merged
+
+
+def merge_progress_data(source: dict, target: dict) -> dict:
+    """Unisce i progressi dello stesso argomento in due profili diversi."""
+    merged = dict(target)
+    merged["sessions"] = int(target.get("sessions", 0)) + int(source.get("sessions", 0))
+    merged["total_minutes"] = int(target.get("total_minutes", 0)) + int(source.get("total_minutes", 0))
+    merged["level"] = target.get("level") or source.get("level")
+    merged["mode"] = target.get("mode") or source.get("mode")
+    merged["created"] = min(
+        [d for d in (target.get("created"), source.get("created")) if d] or [today()]
+    )
+    merged["last_session"] = max(
+        [d for d in (target.get("last_session"), source.get("last_session")) if d] or [""]
+    )
+
+    modules = list(target.get("modules_seen") or [])
+    for module in source.get("modules_seen") or []:
+        if module not in modules:
+            modules.append(module)
+    merged["modules_seen"] = modules
+
+    concepts = dict(target.get("concepts") or {})
+    for key, card in (source.get("concepts") or {}).items():
+        concepts[key] = merge_cards(concepts[key], card) if key in concepts else card
+    merged["concepts"] = concepts
+
+    merged["weak_spots"] = sorted(set(target.get("weak_spots") or []) | set(source.get("weak_spots") or []))
+    entries = list(target.get("log") or []) + list(source.get("log") or [])
+    merged["log"] = sorted(entries, key=lambda e: (e.get("date", ""), e.get("ora", "")))
+    return merged
+
+
+def profile_summary(folder: Path) -> dict:
+    """Contenuto di un profilo: serve a elencare, rinominare e cancellare."""
+    files = sorted(folder.glob("*.json"))
+    sessions = minutes = 0
+    slugs = []
+    for path in files:
+        data = read_json(path, {})
+        if not isinstance(data, dict):
+            continue
+        slugs.append(data.get("slug") or path.stem)
+        sessions += int(data.get("sessions", 0) or 0)
+        minutes += int(data.get("total_minutes", 0) or 0)
+    return {"learner": folder.name, "argomenti": len(files), "sessioni": sessions,
+            "minuti": minutes, "slug": slugs}
+
+
+def rewrite_profile_aliases(source: str, target: str) -> dict:
+    """Il nome vecchio punta al nuovo, e chi puntava al vecchio lo segue.
+
+    Senza questo, `--learner Giulia` dopo una rinomina ricreerebbe un profilo
+    vuoto e le sessioni successive finirebbero nel posto sbagliato.
+    """
+    aliases = profile_aliases()
+    updated = {
+        key: (target if value.casefold() == source.casefold() else value)
+        for key, value in aliases.items()
+    }
+    updated.pop(target, None)  # un alias con il nome nuovo sarebbe un auto-riferimento
+    if source.casefold() != target.casefold():
+        updated[source] = target
+    write_json(profiles_file(), updated)
+    return updated
+
+
+def cmd_learner(args) -> None:
+    if args.action == "list":
+        rows = [profile_summary(PROGRESS_DIR / name) for name in learner_profiles()]
+        payload = {"ok": True, "profili": rows, "alias": profile_aliases()}
+        if args.json:
+            emit(payload)
+        lines = ["| Profilo | Argomenti | Sessioni | Minuti |", "|---|---|---|---|"]
+        lines += [f"| {r['learner']} | {r['argomenti']} | {r['sessioni']} | {r['minuti']} |" for r in rows]
+        if not rows:
+            lines.append("| (nessun profilo) | 0 | 0 | 0 |")
+        for alias, canonical in sorted(profile_aliases().items()):
+            lines.append(f"\n_`{alias}` è un alias di `{canonical}`._")
+        emit(payload, as_text="\n".join(lines))
+
+    if args.action == "rename":
+        source_dir = learner_dir(args.source)
+        if not source_dir.is_dir():
+            die(f"Il profilo '{args.source}' non ha progressi in {source_dir}.")
+        new_name = clean_profile_name(args.to)
+        if source_dir.name == new_name:
+            die(f"Il profilo si chiama già '{new_name}'.")
+        existing = learner_dir(args.to)
+        if existing.is_dir() and existing.name.casefold() != source_dir.name.casefold():
+            die(
+                f"Esiste già un profilo '{existing.name}' con dei progressi: per unire i due usa "
+                f"`iv.py learner merge \"{source_dir.name}\" --into \"{existing.name}\"`."
+            )
+        summary = profile_summary(source_dir)
+        target_dir = PROGRESS_DIR / new_name
+        if source_dir.name.casefold() == new_name.casefold():
+            # solo maiuscole/spazi diversi: su Windows la rinomina diretta puo' fallire
+            through = PROGRESS_DIR / f".{new_name}.tmp"
+            source_dir.rename(through)
+            through.rename(target_dir)
+        else:
+            source_dir.rename(target_dir)
+        for path in sorted(target_dir.glob("*.json")):
+            data = read_json(path, None)
+            if isinstance(data, dict):
+                data["learner"] = target_dir.name
+                write_json(path, data)
+        aliases = rewrite_profile_aliases(source_dir.name, target_dir.name)
+        diary = write_diary(target_dir.name)
+        emit(
+            {
+                "ok": True, "azione": "Profilo allievo rinominato",
+                "da": source_dir.name, "a": target_dir.name,
+                "argomenti": summary["argomenti"], "sessioni": summary["sessioni"],
+                "minuti": summary["minuti"], "slug": summary["slug"],
+                "alias": aliases, "diario": str(diary),
+                "nota": f"Il vecchio nome '{source_dir.name}' resta come alias: i comandi che lo usano "
+                        f"continuano a scrivere in '{target_dir.name}'.",
+            }
+        )
+
+    if args.action == "delete":
+        target_dir = learner_dir(args.name)
+        if not target_dir.is_dir():
+            die(f"Il profilo '{args.name}' non ha progressi in {target_dir}.")
+        summary = profile_summary(target_dir)
+        aliases = profile_aliases()
+        removed = sorted(
+            key for key, value in aliases.items()
+            if key.casefold() == target_dir.name.casefold()
+            or value.casefold() == target_dir.name.casefold()
+        )
+        payload = {
+            "profilo": target_dir.name, "cartella": str(target_dir),
+            "argomenti": summary["argomenti"], "sessioni": summary["sessioni"],
+            "minuti": summary["minuti"], "slug": summary["slug"],
+            "alias_che_verrebbero_rimossi": removed,
+            "irreversibile": "sessioni, voti, lacune e diario di questo profilo vanno persi; "
+                             "le sotto-skill e gli altri profili non si toccano",
+        }
+        if not args.yes:
+            emit(
+                {"ok": False, "azione": "Anteprima di cancellazione: niente è stato modificato",
+                 **payload, "conferma": "Rilancia con --yes per cancellare definitivamente."},
+                code=1,
+            )
+        shutil.rmtree(target_dir)
+        for key in removed:
+            aliases.pop(key, None)
+        write_json(profiles_file(), aliases)
+        emit({"ok": True, "azione": "Profilo allievo cancellato", **payload,
+              "alias_rimossi": removed})
+
+    if args.action != "merge":
+        die(f"Azione '{args.action}' non riconosciuta.")
+
+    source = (args.source or "").strip()
+    target = (args.into or "").strip()
+    if not source or not target:
+        die("Indica profilo sorgente e destinazione: iv.py learner merge <sorgente> --into <destinazione>")
+    if learner_dir(source).name.casefold() == learner_dir(target).name.casefold():
+        die("Sorgente e destinazione sono lo stesso profilo: non c'è niente da unire.")
+    if not learner_dir(source).is_dir():
+        die(f"Il profilo '{source}' non ha progressi in {learner_dir(source)}.")
+
+    target_dir = learner_dir(target)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source_dir = learner_dir(source)
+    uniti = []
+    for path in sorted(source_dir.glob("*.json")):
+        incoming = read_json(path, None)
+        if not isinstance(incoming, dict):
+            continue
+        slug = incoming.get("slug") or path.stem
+        incoming["slug"] = slug
+        destination = target_dir / f"{slug}.json"
+        existing = read_json(destination, None)
+        merged = merge_progress_data(incoming, existing) if isinstance(existing, dict) else incoming
+        merged["learner"] = target_dir.name
+        write_json(destination, merged)
+        path.unlink()  # il file del profilo assorbito non deve restare (né essere riletto)
+        uniti.append({"slug": slug, "sessioni": int(merged.get("sessions", 0) or 0),
+                      "minuti": int(merged.get("total_minutes", 0) or 0),
+                      "unito_a_esistente": isinstance(existing, dict)})
+
+    # Il diario del profilo assorbito non ha più senso: quello della destinazione sì.
+    source_diary = source_dir / "DIARIO.md"
+    if source_diary.exists():
+        source_diary.unlink()
+    if not any(source_dir.iterdir()):
+        source_dir.rmdir()
+
+    aliases = profile_aliases()
+    aliases[source_dir.name] = target_dir.name
+    write_json(profiles_file(), aliases)
+    diary = write_diary(target_dir.name)
+
+    emit(
+        {
+            "ok": True,
+            "azione": "Profili allievo uniti",
+            "sorgente": source_dir.name,
+            "destinazione": target_dir.name,
+            "argomenti": uniti,
+            "alias_registrato": {source_dir.name: target_dir.name},
+            "diario": str(diary),
+            "nota": (
+                f"Da adesso `--learner {source_dir.name}` (e l'omissione di --learner se sul profilo "
+                f"'{source_dir.name}') scrive in '{target_dir.name}': i progressi non si riseparano."
+            ),
+        }
+    )
+
+
 def cmd_status(args) -> None:
     reg = sync_from_disk(load_registry())
     topics = [e for e in reg["topics"] if e.get("status") != "merged"]
-    stale = [e["slug"] for e in topics if e.get("base_version") != BASE_VERSION]
+    stale = [e["slug"] for e in topics if frame_state(e)["da_rigenerare"]]
+    updateable = [e["slug"] for e in topics if frame_state(e)["aggiornabile"]]
     drafts = [e["slug"] for e in topics if e.get("status") == "draft"]
     due = due_items(args.learner, 0)
+    profili = learner_profiles()
+    altri = other_profiles(args.learner)
+    resolved = learner_dir(args.learner).name
     payload = {
         "ok": True,
         "base_version": BASE_VERSION,
+        "learner": resolved,   # nome reale del profilo, anche se e' un alias
+        "profilo_richiesto": args.learner if resolved != args.learner else None,
+        "profili": profili,
+        "altri_profili_con_progressi": altri,
         "argomenti": len(topics),
         "attivi": len([e for e in topics if e.get("status") == "active"]),
         "bozze_da_completare": drafts,
         "da_rigenerare": stale,
+        "cornice_aggiornabile": updateable,
         "ripassi_oggi": len(due["concetti_da_ripassare"]),
         "prossimo_passo": (
             "Completa le bozze: " + ", ".join(drafts) if drafts
             else "Rigenera gli argomenti con cornice vecchia: " + ", ".join(stale) if stale
-            else "Nessun debito tecnico: puoi dedicarti allo studio."
+            else (
+                "Nessun debito bloccante. Aggiornamento opzionale (cornice "
+                f"{BASE_VERSION}) disponibile per: " + ", ".join(updateable)
+                if updateable else
+                (
+                    "I progressi sono in un altro profilo allievo ("
+                    + ", ".join(a["learner"] for a in altri)
+                    + "): rilancia il comando con `--learner <nome>`."
+                    if altri and not any(learner_dir(args.learner).glob("*.json")) else
+                    "Nessun debito tecnico: puoi dedicarti allo studio."
+                )
+            )
         ),
     }
     emit(payload)
@@ -1263,6 +1993,35 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="Stato del sistema")
     p.add_argument("--learner", default="default")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("style", help="Misura la leggibilita' di una sotto-skill o di una bozza")
+    p.add_argument("slug", nargs="?")
+    p.add_argument("--file")
+    p.add_argument("--text")
+    p.add_argument("--level", type=int, choices=[1, 2, 3, 4])
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_style)
+
+    p = sub.add_parser("learner", help="Profili allievo: elenco e unione dei progressi")
+    actions = p.add_subparsers(dest="action", required=True)
+    pl = actions.add_parser("list", help="Profili con progressi e alias")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_learner)
+    pm = actions.add_parser("merge", help="Unisce un profilo in un altro")
+    pm.add_argument("source")
+    pm.add_argument("--into", required=True)
+    pm.add_argument("--json", action="store_true")
+    pm.set_defaults(func=cmd_learner)
+    pr = actions.add_parser("rename", help="Rinomina un profilo (il vecchio nome resta come alias)")
+    pr.add_argument("source")
+    pr.add_argument("--to", required=True)
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(func=cmd_learner)
+    pd = actions.add_parser("delete", help="Cancella un profilo e i suoi progressi (serve --yes)")
+    pd.add_argument("name")
+    pd.add_argument("--yes", action="store_true")
+    pd.add_argument("--json", action="store_true")
+    pd.set_defaults(func=cmd_learner)
 
     return parser
 

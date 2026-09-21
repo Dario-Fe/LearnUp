@@ -39,7 +39,15 @@ Da qui: "esame" se c'è una prova, "docenza" se studia per altri o tiene una lez
 
 **Scopo:** preparare materiale o verifiche per studenti.
 
-- Ogni allievo ha il suo profilo: usa `--learner <nome>` su `log`, `due` e `stats`.
+- Ogni allievo ha il suo profilo: usa `--learner <nome>` su `log`, `due` e `stats`. In questa modalità il
+  nome da chiedere è quello **dello studente**, non del tuo interlocutore; e vale la regola del primo avvio
+  (`protocollo-sessione.md`, FASE 0.2): si chiede una volta e resta comunque in locale.
+- **Il profilo di uno studente nasce al primo `log`**: non c'è niente da creare o registrare prima. Le
+  sotto-skill sono condivise fra tutti gli allievi (imparano lo stesso argomento senza rigenerarlo);
+  separati restano i progressi, le lacune, i ripassi e il diario di ciascuno.
+- Il nome si corregge con `learner rename` (un cognome scritto male è la norma) e un doppione si unisce con
+  `learner merge`; entrambi lasciano un alias. `learner delete` esiste, ma si usa solo su richiesta esplicita
+  del docente: cancellare un profilo significa cancellare la storia di studio di una persona.
 - Il sistema produce anche **materiale per il docente**: spiegazioni, correzioni, criteri di valutazione.
 - `verifica.md` diventa la fonte principale: griglia di correzione, livelli di padronanza, recupero.
 - Il diario (`iv.py stats --write`) è il report per allievo: dove sta, dove sbatte, cosa proporre.
