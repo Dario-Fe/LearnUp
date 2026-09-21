@@ -47,6 +47,21 @@ Cosa questo *non* misura, e nessun comando misurerà: se la spiegazione è **ver
 se il livello di astrazione è quello giusto. Quella parte resta responsabilità dell'insegnante, e si difende
 con le etichette di affidabilità e con un esempio concreto per ogni idea astratta.
 
+### L'esempio deve funzionare nella lingua del corso
+
+C'è una classe di errore che nessun comando intercetta, e che abbiamo già preso una volta: usare un esempio
+che **nella lingua del corso non significa quello che credi**. Il caso reale: un modulo sull'ambiguità
+costruito sulla frase «la banca era alluvionata perché il fiume era in piena». In inglese *bank* vale sia
+"istituto di credito" sia "riva di un fiume", quindi l'esempio funziona; in italiano *banca* non significa
+"riva" (la riva è *riva, sponda, argine*), quindi la frase ha un senso solo e l'allievo resta — giustamente —
+confuso. Peggio: la verifica ha poi misurato una risposta su una domanda che non esisteva.
+
+**Verifica pratica, prima di consegnare:** sostituisci l'alternativa nella frase. Se in italiano la frase
+regge in un senso solo, l'esempio non mostra nessuna ambiguità e va cambiato. Ambiguità italiane vere:
+*vite* (la pianta, il chiodo), *pesca* (il frutto, l'attività), *riso* (il cereale, la risata), *capo*
+(chi comanda, l'estremità). La regola vale per ogni artificio legato alla lingua — giochi di parole,
+omografi, ordine delle parole — non solo per le ambiguità.
+
 ## Struttura di una lezione
 
 Blocchi nell'ordine, con lunghezze indicative:

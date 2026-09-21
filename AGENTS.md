@@ -129,7 +129,10 @@ e apri lì una sessione: deve funzionare senza alcuna configurazione, e il primo
 
 ## 4. Stato attuale (2026-09-21)
 
-- **Versione della cornice**: `BASE_VERSION = "1.0.0"` in `scripts/iv.py`. Il confronto è per **major**
+- **Versione della cornice**: `BASE_VERSION = "1.1.0"` in `scripts/iv.py`. La 1.1.0 ha aggiunto la regola
+  sugli esempi verificati **nella lingua del corso** (trappola in §9, decisione #30): è una minor, quindi i
+  topic scritti con la 1.0.0 restano usabili e compaiono in `cornice_aggiornabile` — nessuno diventa
+  `da_rigenerare`. Il confronto è per **major**
   (`frame_state`): major diversa → `da_rigenerare` (i contenuti vanno rigenerati); stessa major ma versione
   più vecchia → `cornice_aggiornabile` (arricchimento opzionale, la sotto-skill resta usabile). Versione
   assente o illeggibile → da rigenerare, per prudenza (vedi decisione #27).
@@ -412,6 +415,15 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
   registrati con la vecchia formula. Se succede, `iv.py reindex` non basta: serve un `alias --add`.
 - **Il demo `metodo-feynman`** è il test di qualità a occhio: se il validatore passa ma il contenuto sembra
   fiacco, il problema sono le soglie minime, non l'esempio.
+- **Calchi linguistici negli esempi (visto sul campo)**: la sotto-skill sugli LLM spiegava l'ambiguità con
+  «la banca era alluvionata perché il fiume era in piena» — ambiguità inglese (*bank* = istituto / riva) che
+  in italiano non esiste: *banca* non significa "riva", e la riva è *riva, sponda, argine* (Treccani dà
+  "banca" come istituto di credito, come "banca dati", come antica "panca", e come termine tecnico per i
+  terrapieni a ridosso degli argini). L'allievo ha risposto in modo plausibile e la verifica l'ha bocciato
+  su una domanda che non esisteva: **l'errore era nel materiale, non nella risposta**. Il `ProseLint` non
+  può vederlo (non è un refuso, è un senso sbagliato), quindi la difesa è la regola in
+  `references/contratto-output.md`: sostituire l'alternativa nella frase e verificare che l'ambiguità
+  sopravviva in italiano.
 
 ---
 
@@ -448,6 +460,7 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 | 27 | `da_rigenerare` scatta solo al cambio di **major**; una minor più vecchia diventa `cornice_aggiornabile` | Il codice confrontava la stringa intera, mentre la documentazione prometteva "minor = aggiunte compatibili": conseguenza, ogni ritocco alle regole avrebbe marcato come da rigenerare anche i topic perfettamente validi, con lavoro inutile e un allarme che perde significato. Ora il codice dice quello che le reference promettevano. Una versione assente o illeggibile resta `da_rigenerare`: provenienza ignota = ricontrollare |
 | 28 | Il nome del profilo è validato (spazi sì, separatori di percorso no) e i comandi riportano il profilo **risolto** | Un secondo studente deve nascere dichiarandolo, e i nomi reali hanno spazi ("Marco Rossi"): bloccare gli spazi sarebbe stato ostile, lasciar passare `../x` avrebbe scritto fuori da `data/progress/`. Riportare il nome risolto chiude la classe di bug in cui l'output dichiara un profilo e il file ne dimostra un altro (già visto con `log`, che rispondeva `default` senza dirlo mentre l'agente credeva di aver scritto altrove) |
 | 29 | `learner rename` separato da `learner merge`, e `learner delete` con anteprima obbligatoria (`--yes`) | Sono tre operazioni diverse e vanno confuse il meno possibile: correggere un nome (rename, senza toccare i contenuti), fondere due storie (merge), distruggere una storia (delete). `rename` verso un profilo con progressi si rifiuta e rimanda a `merge`; `delete` senza `--yes` non modifica niente ed espone cosa verrebbe perso |
+| 30 | Una verifica costruita su un esempio difettoso si **annulla**, non si corregge: la scheda esce dai progressi e il concetto si rivaluta con un esempio valido | Un voto basso su una domanda sbagliata è un dato falso, e nella ripetizione spaziata costa due volte: programma un ripasso che non serve e abbassa l'ease di un concetto mai verificato. Corollario sul materiale: l'esempio va verificato **nella lingua del corso** (vedi trappole e `contratto-output.md`), perché il calco dall'inglese è invisibile al lint |
 
 ---
 

@@ -30,7 +30,7 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-BASE_VERSION = "1.0.0"
+BASE_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------- percorsi
 
