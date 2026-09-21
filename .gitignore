@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------- dati personali
+# Progressi, profili allievo e unioni di argomenti: sono tuoi, non vanno pubblicati.
+data/progress/
+data/_merged/
+
+# Indice rigenerabile: viene ricostruito al primo comando (iv.py list / find / reindex)
+# a partire da data/topics/*/meta.json, quindi non serve versionarlo.
+data/registry.json
+
+# ---------------------------------------------------------------- installazione locale
+# Contiene solo il collegamento a questo repo (junction su Windows) per il
+# discovery della skill da parte degli agenti: non fa parte del progetto pubblicato.
+.agents/
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---------------------------------------------------------------- editor e sistemi operativi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ---------------------------------------------------------------- output generati
+dist/
+build/
+*.tmp
+data/**/DIARIO.md

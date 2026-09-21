@@ -1,0 +1,20 @@
+{
+  "slug": "{{SLUG}}",
+  "title": "{{TITLE}}",
+  "key": "{{KEY}}",
+  "status": "draft",
+  "aliases": [],
+  "level": {{LEVEL}},
+  "mode": "{{MODE}}",
+  "prereqs": [],
+  "tags": [],
+  "created": "{{DATE}}",
+  "updated": "{{DATE}}",
+  "base_version": "{{BASE_VERSION}}",
+  "content_hash": "",
+  "revision": 1,
+  "quality": {
+    "validated": false,
+    "self_check": ""
+  }
+}

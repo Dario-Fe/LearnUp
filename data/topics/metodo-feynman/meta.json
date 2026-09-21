@@ -1,0 +1,26 @@
+{
+  "slug": "metodo-feynman",
+  "title": "Metodo Feynman",
+  "key": "feynman-metodo",
+  "status": "active",
+  "aliases": [
+    "tecnica Feynman"
+  ],
+  "level": 1,
+  "mode": "autodidatta",
+  "prereqs": [],
+  "tags": [
+    "apprendimento"
+  ],
+  "created": "2026-09-21",
+  "updated": "2026-09-21",
+  "base_version": "1.0.0",
+  "content_hash": "20e669fba114",
+  "revision": 1,
+  "quality": {
+    "validated": true,
+    "errori": 0,
+    "avvisi": 0,
+    "self_check": "esempio di riferimento: tutti i minimi dello schema rispettati, fonti dichiarate come incerte dove non confermate"
+  }
+}
