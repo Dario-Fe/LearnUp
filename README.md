@@ -1,10 +1,14 @@
 # Virtual Teacher
 
+**A skill that turns an agent into your teacher, in any subject.**
+
 **An AI agent skill that studies with you and learns each topic only once.**
 Rigorous about content, plain-spoken in delivery: concrete examples, constant checking,
 and a memory of your progress that survives across sessions.
 
 [Versione italiana →](README.it.md)
+
+**Repository:** https://github.com/Dario-Fe/LearnUp — the skill's name is `insegnante-virtuale`.
 
 ---
 
@@ -88,8 +92,11 @@ The skill follows the **Agent Skills** standard (`SKILL.md` with `name` + `descr
 ### 1. With the `skills` CLI (recommended)
 
 ```bash
-npx skills add <your-user>/insegnante-virtuale --skill insegnante-virtuale --yes
+npx skills add Dario-Fe/LearnUp --skill insegnante-virtuale --yes
 ```
+
+The repository is `Dario-Fe/LearnUp`; the *skill* is called `insegnante-virtuale` — that is the name
+`--skill` expects, and the name your agent loads.
 
 ### 2. Manually, inside a project
 
@@ -108,8 +115,8 @@ The agent finds the skill by name: just ask it to teach you something.
 Clone the repository and link the folder to the discovery location:
 
 ```bash
-git clone https://github.com/<your-user>/insegnante-virtuale.git
-cd insegnante-virtuale
+git clone https://github.com/Dario-Fe/LearnUp.git
+cd LearnUp
 # Linux / macOS
 mkdir -p .agents/skills && ln -s "$(pwd)" .agents/skills/insegnante-virtuale
 # Windows (junction, no administrator rights required)
@@ -336,7 +343,7 @@ re-listen to a lesson, Obsidian integration.
 
 ---
 
-## Publishing the repository (what to copy)
+## The repository: what is versioned, and how to fork it
 
 The repository **is** the skill: everything needed is already in the root. Version these:
 
@@ -356,13 +363,16 @@ git add .
 git status          # make sure nothing personal shows up
 git commit -m "Virtual Teacher: a regenerating study skill"
 git branch -M main
-git remote add origin https://github.com/<your-user>/insegnante-virtuale.git
+git remote set-url origin https://github.com/<your-user>/LearnUp.git   # or: git remote add origin ...
 git push -u origin main
 ```
 
-With the GitHub CLI: `gh repo create insegnante-virtuale --public --source=. --push`.
+With the GitHub CLI, when creating a new repository of your own:
+`gh repo create <your-user>/LearnUp --public --source=. --push`.
 
-Before publishing, replace the copyright holder in `LICENSE`.
+The upstream repository already exists at **https://github.com/Dario-Fe/LearnUp**, so for a fork you
+do not need `git init` at all: fork it on GitHub, clone your fork, and push there. In that case
+replace the copyright holder in `LICENSE` with your own name.
 
 ---
 

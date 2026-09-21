@@ -332,6 +332,7 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 | 16 | Installazione locale via junction | Mantiene una sola copia dei sorgenti (niente drift) pur restando scopribile dall'agente |
 | 17 | `sync_from_disk` salva l'indice ricostruito, invece di ricostruirlo solo in memoria | Su un clone l'indice deve essere vero anche su disco; un file derivato vuoto è peggio di un file assente. Le scritture avvengono solo se il registro differisce dai `meta.json` |
 | 18 | `iv.py log` eredita `--level` dal `meta.json` invece di lasciare `null` | Gli agenti omettono gli opzionali; un campo vuoto nei progressi costringe l'agente successivo a reinterpretare il metadato |
+| 19 | Il repository si chiama `LearnUp`, la skill `insegnante-virtuale` | Nomi con destinatari diversi: il repository è il progetto da leggere su GitHub, la skill è il contratto con l'agente. Rinomare la skill invaliderebbe `npx skills add` e il caricamento per nome |
 
 ---
 
@@ -389,6 +390,11 @@ riempimento stanno nelle costanti `VALID_*` in cima al file.
 
 ## 12. Pubblicazione
 
+Repository pubblico: **https://github.com/Dario-Fe/LearnUp** (branch `main`, remote `origin`).
+Attenzione ai due nomi diversi: il **repository** si chiama `LearnUp`, la **skill** `insegnante-virtuale`
+(è quello che l'agente carica ed è quello che `--skill` si aspetta). Non "correggere" il nome della
+skill per allinearlo al repository: romperebbe le installazioni esistenti e il caricamento per nome.
+
 Versionare: `SKILL.md`, `README.md`, `README.it.md`, `AGENTS.md`, `LICENSE`, `.gitignore`, `references/`,
 `scripts/`, `assets/`, `tests/`, `data/topics/` (esempio di riferimento).
 
@@ -399,13 +405,18 @@ Non versionare: `data/progress/`, `data/_merged/`, `data/registry.json`, `.agent
 git init && git add . && git status      # verificare che non compaia nulla di personale
 git commit -m "Insegnante Virtuale: skill di studio rigenerante"
 git branch -M main
-git remote add origin https://github.com/<utente>/insegnante-virtuale.git
+git remote add origin https://github.com/Dario-Fe/LearnUp.git      # remoto di riferimento (già esistente)
 git push -u origin main
-# oppure: gh repo create insegnante-virtuale --public --source=. --push
+# per un fork: gh repo create <utente>/LearnUp --public --source=. --push
 ```
 
-Prima di pubblicare: sostituire il titolare del copyright in `LICENSE` ("LearnUp contributors" è un
-segnaposto) e verificare che `npx skills add <utente>/insegnante-virtuale --list` trovi la skill.
+Repository pubblico: **https://github.com/Dario-Fe/LearnUp**. Il nome del repository (`LearnUp`) e
+quello della skill (`insegnante-virtuale`) sono deliberatamente diversi: la skill si chiama così perché
+è quello che l'agente carica, il repository perché è il progetto. Verificare che
+`npx skills add Dario-Fe/LearnUp --list` trovi la skill `insegnante-virtuale`.
+
+Prima di pubblicare un fork: sostituire il titolare del copyright in `LICENSE` (già impostato a
+`Dario-Fe` nel repository di riferimento).
 
 ---
 
