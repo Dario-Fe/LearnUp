@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -30,7 +31,7 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-BASE_VERSION = "1.1.0"
+BASE_VERSION = "1.7.0"
 
 # ---------------------------------------------------------------- percorsi
 
@@ -42,7 +43,75 @@ REGISTRY = DATA / "registry.json"
 TOPICS_DIR = DATA / "topics"
 PROGRESS_DIR = DATA / "progress"
 MERGED_DIR = DATA / "_merged"
+# Lezioni del docente: materiale di lavoro, non conoscenza condivisa e non progressi.
+LEZIONI_DIR = DATA / "lezioni"
+# Materiali forniti dall'utente (appunti, programma, prove passate): fuori dalle
+# sotto-skill perche' sono suoi (copyright e dati personali) e perche' la stessa
+# sotto-skill puo' servire a persone con materiali diversi.
+MATERIALI_DIR = DATA / "materiali"
+MATERIALI_TIPI = ("appunti", "programma", "prova", "libro", "altro")
+
+# Limiti dei testi trascritti: non sono vincoli tecnici, sono il confine di cio' che
+# l'agente puo' aver letto davvero in una volta. Oltre, invece di far finta, si lavora
+# a pezzi (un estratto per capitolo, con le pagine dichiarate).
+MAX_TESTO_CARATTERI = 400_000    # circa 250 pagine di solo testo
+MIN_TESTO_CARATTERI = 400        # sotto, non puo' essere la trascrizione di un documento
+# Dimensione dei blocchi di ricerca. Tenuto basso di proposito: un blocco troppo
+# grande rende la citazione inutile ("riga 1" per un'intera pagina). Visto sul campo
+# su un estratto senza -layout, dove le righe sono poche e lunghe.
+CHUNK_CARATTERI = 600
+
+# Banda plausibile di caratteri per pagina. E' l'unico controllo sulla fedelta' che si
+# possa fare senza leggere il documento: sotto la soglia il testo e' troncato o
+# riassunto, sopra le pagine dichiarate sono sbagliate.
+CARATTERI_PER_PAGINA = (250, 6000)
+MATERIALI_MEZZI = ("testo", "vista", "ocr")   # come e' stato ottenuto il testo
+MEZZO_NON_DICHIARATO = "non dichiarato"
+
+# Attrezzi opzionali per estrarre testo da un PDF. NON sono dipendenze: se ci sono
+# l'estrazione e' meccanica (una copia, non una lettura), se non ci sono si legge a
+# vista e si controlla a campione. Il motore si limita a **rilevarli**: non li esegue
+# mai, perche' "optional" deve restare optional e il confine deve restare netto.
+STRUMENTI_PDF = (
+    # `-enc UTF-8` non e' un dettaglio: pdftotext scrive Latin-1 per default, e il motore
+    # legge UTF-8. Senza quel flag l'estrazione e' meccanica ma illeggibile (visto sul campo).
+    {"chiave": "pdftotext", "tipo": "comando", "nome": "pdftotext",
+     "comando": "pdftotext -layout -enc UTF-8",
+     "alternativa": "pdftotext -enc UTF-8",
+     "reso": "estrae il testo dal PDF: copia meccanica (richiede -enc UTF-8). `-layout` "
+             "conserva elenchi e tabelle, ma i riquadri centrati entrano nelle frasi",
+     "mezzo": "testo"},
+    {"chiave": "pdfinfo", "tipo": "comando", "nome": "pdfinfo",
+     "comando": "pdfinfo",
+     "reso": "conta le pagine del PDF: rende --pagine verificabile invece che dichiarato",
+     "mezzo": ""},
+    {"chiave": "pypdf", "tipo": "modulo", "nome": "pypdf",
+     "comando": "python -c \"from pypdf import PdfReader; ...\"",
+     "reso": "estrae il testo in Python: copia meccanica senza uscire dal processo",
+     "mezzo": "testo"},
+    {"chiave": "pymupdf", "tipo": "modulo", "nome": "fitz",
+     "comando": "python -c \"import fitz; ...\"",
+     "reso": "estrae testo e impaginazione: copia meccanica (PyMuPDF)",
+     "mezzo": "testo"},
+)
+RISULTATI_MASSIMI = 5            # risultati restituiti da `materiali search`
+ESTRATTO_CARATTERI = 400         # quanto testo si restituisce per ogni risultato
 TEMPLATE_DIR = SKILL_DIR / "assets" / "templates" / "topic"
+LEZIONE_TEMPLATE = SKILL_DIR / "assets" / "templates" / "lezione" / "lezione.md"
+
+# Sezioni obbligatorie di una lezione: sono quelle che servono davvero in aula,
+# e ognuna si puo' controllare per esistenza (e' la differenza fra un artefatto e
+# una promessa di artefatto).
+LEZIONE_HEADINGS = (
+    "## Destinatari e prerequisiti",
+    "## Obiettivo della lezione",
+    "## Scaletta",
+    "## Esempi alla lavagna",
+    "## Esercizi con soluzioni",
+    "## Domande probabili",
+    "## Compiti e materiali",
+    "## Verifica alla prossima lezione",
+)
 
 REQUIRED_FILES = [
     "SKILL.md",
@@ -57,6 +126,28 @@ REQUIRED_FILES = [
 
 TOPIC_STATUSES = ("draft", "active", "merged", "stale")
 MODES = ("autodidatta", "esame", "docenza")
+
+# Banda d'eta' della persona: e' **dichiarata** dall'utente, non verificata.
+BANDE_ETA = ("bambino", "ragazzo", "adolescente", "adulto")
+
+# Registro: *come* si parla, non *cosa* si sa. Non e' un asse parallelo al livello,
+# e' un vincolo che ci si mette sopra (vedi `style_target`).
+REGISTRI = ("standard", "scolastico", "bambino")
+
+# Dalla banda d'eta' al registro e al livello suggerito per un argomento nuovo.
+# E' un input dichiarato, non un'inferenza sul contenuto.
+DA_BANDA_A_PROFILO = {
+    "bambino": {"registro": "bambino", "livello": 1},
+    "ragazzo": {"registro": "scolastico", "livello": 1},
+    "adolescente": {"registro": "scolastico", "livello": 2},
+    "adulto": {"registro": "standard", "livello": 2},
+}
+
+# Metadati della persona dentro la cartella del profilo: NON sono un argomento.
+PERSONA_NAME = "_persona.json"
+
+# Quanto si stima di spendere su un modulo di cui non si sa ancora nulla (minuti).
+MINUTI_PER_MODULO_DEFAULT = 45
 
 # ---------------------------------------------------------------- testo
 
@@ -556,6 +647,16 @@ STYLE_TARGETS = {
     4: {"gulpease": 40.0, "parole_frase": 24.0, "frasi_lunghe": 30},
 }
 
+# Obiettivi del registro: si aggiungono a quelli del livello e non li allentano mai
+# (si applica il piu' severo dei due). `standard` non aggiunge nulla: vale il livello.
+# "virgole_frase" limita il periodare fitto, che e' il modo in cui un testo semplice
+# in apparenza resta difficile per chi ha poca esperienza di lettura.
+STYLE_TARGETS_REGISTRO = {
+    "bambino": {"gulpease": 80.0, "parole_frase": 12.0, "frasi_lunghe": 2, "virgole_frase": 0.6},
+    "scolastico": {"gulpease": 65.0, "parole_frase": 15.0, "frasi_lunghe": 6, "virgole_frase": 1.0},
+    "standard": None,
+}
+
 LONG_SENTENCE = 30
 MIN_UNITS_FOR_STYLE = 12
 
@@ -615,15 +716,35 @@ def style_metrics(text: str) -> dict:
     }
 
 
-def style_problems(metrics: dict, level: int) -> list[str]:
-    """Cosa non rispetta l'obiettivo di leggibilita' del livello dichiarato."""
-    target = STYLE_TARGETS.get(int(level or 2), STYLE_TARGETS[2])
+def style_target(level: int, registro: str | None = None) -> dict:
+    """Obiettivo effettivo: il piu' severo fra quello del livello e quello del registro.
+
+    Il registro puo' solo stringere: un testo "da bambino" piu' leggibile di quanto
+    il livello chieda resta conforme, mai il contrario. Cosi' le due cose non si
+    contraddicono e non serve decidere chi vince.
+    """
+    target = dict(STYLE_TARGETS.get(int(level or 2), STYLE_TARGETS[2]))
+    extra = STYLE_TARGETS_REGISTRO.get(registro or "standard")
+    if not extra:
+        return target
+    target["gulpease"] = max(target["gulpease"], extra["gulpease"])
+    target["parole_frase"] = min(target["parole_frase"], extra["parole_frase"])
+    target["frasi_lunghe"] = min(target["frasi_lunghe"], extra["frasi_lunghe"])
+    target["virgole_frase"] = extra["virgole_frase"]
+    return target
+
+
+def style_problems(metrics: dict, level: int, registro: str | None = None) -> list[str]:
+    """Cosa non rispetta l'obiettivo di leggibilita' del livello e del registro."""
+    target = style_target(level, registro)
     if not metrics.get("frasi") or metrics.get("gulpease") is None:
         return []
+    con_registro = bool(registro) and registro != "standard"
+    dove = f"il livello {level}" + (f" col registro '{registro}'" if con_registro else "")
     out = []
     if metrics["gulpease"] < target["gulpease"]:
         out.append(
-            f"leggibilita' {metrics['gulpease']} < {target['gulpease']} (Gulpease) per il livello {level}: "
+            f"leggibilita' {metrics['gulpease']} < {target['gulpease']} (Gulpease) per {dove}: "
             f"{metrics['parole_frase']} parole per frase di media"
         )
     if metrics["parole_frase"] > target["parole_frase"] and metrics["gulpease"] >= target["gulpease"]:
@@ -635,6 +756,11 @@ def style_problems(metrics: dict, level: int) -> list[str]:
         out.append(
             f"{metrics['frasi_lunghe_pct']}% di frasi oltre {LONG_SENTENCE} parole "
             f"(obiettivo <= {target['frasi_lunghe']}%)"
+        )
+    if con_registro and metrics.get("virgole_frase", 0) > target["virgole_frase"]:
+        out.append(
+            f"periodare troppo fitto ({metrics['virgole_frase']} virgole per frase, obiettivo "
+            f"<= {target['virgole_frase']} col registro '{registro}'): una subordinata per frase"
         )
     if out:
         out.append(f"frase piu' lunga ({metrics['parole_frase_piu_lunga']} parole): «{metrics['frase_piu_lunga']}»")
@@ -665,19 +791,23 @@ def cmd_style(args) -> None:
                 die(f"File assente: {name}")
             files.append((name, style_metrics(read_text(path))))
 
+    registro = args.registro or "standard"
     payload = {
         "ok": True,
-        "criterio": STYLE_TARGETS[int(level or 2)],
+        "criterio": style_target(level, registro),
         "livello": int(level or 2),
+        "registro": registro,
         "misure": [{"file": name, **metrics} for name, metrics in files],
-        "problemi": {name: style_problems(metrics, level) for name, metrics in files},
+        "problemi": {name: style_problems(metrics, level, registro) for name, metrics in files},
     }
     payload["ok"] = not any(payload["problemi"][name] for name, _ in files)
     if args.json:
         emit(payload, code=0 if payload["ok"] else 1)
 
     lines = [
-        f"# Leggibilita' (livello {level}: Gulpease >= {payload['criterio']['gulpease']}, "
+        f"# Leggibilita' (livello {level}"
+        + (f", registro {registro}" if registro != "standard" else "")
+        + f": Gulpease >= {payload['criterio']['gulpease']}, "
         f"<= {payload['criterio']['parole_frase']} parole/frase)",
         "",
         "| File | Gulpease | Parole/frase | Frasi | >30 parole | Virgole/frase |",
@@ -1200,6 +1330,103 @@ def learner_profiles() -> list[str]:
     return sorted(p.name for p in PROGRESS_DIR.iterdir() if p.is_dir())
 
 
+def topic_files(folder: Path) -> list[Path]:
+    """File di progresso (uno per argomento) dentro la cartella di un profilo.
+
+    I metadati della persona (`_persona.json`) non sono un argomento: senza
+    questo filtro verrebbero contati in `learner list`, letti come un topic da
+    `stats` e `due`, e uniti come se fossero una storia di studio da `merge`.
+    Meglio un solo punto di verita' che sei glob ripetuti (invariante #6).
+    """
+    if not folder.is_dir():
+        return []
+    return [path for path in sorted(folder.glob("*.json")) if path.name != PERSONA_NAME]
+
+
+def persona_file(folder: Path) -> Path:
+    return folder / PERSONA_NAME
+
+
+def iso_date(value: str) -> str:
+    """Data ISO (YYYY-MM-DD) o errore: il profilo non accetta formati liberi."""
+    try:
+        return date.fromisoformat(str(value).strip()).isoformat()
+    except ValueError:
+        die(f"Data '{value}' non valida: usa il formato YYYY-MM-DD.")
+
+
+def blank_persona(learner: str) -> dict:
+    """Persona dello studente: chi studia, con che registro e con quale tempo.
+
+    `banda_eta` e' dichiarata dall'utente e non verificata: serve a proporre
+    livello e registro, non a certificare nulla.
+    """
+    return {
+        "learner": learner,
+        "banda_eta": None,
+        "banda_eta_aggiornata": "",
+        "registro": None,   # dichiarato a mano: vince su quello che propone la banda
+        "configurato_da": None,
+        "budget_minuti_settimana": None,
+        "scadenza": None,
+        "aggiornato": "",
+    }
+
+
+def read_persona_file(folder: Path) -> dict:
+    """Persona dichiarata del profilo; `{}` se non e' mai stata dichiarata.
+
+    I campi sconosciuti vengono conservati: un agente puo' aggiungerne, e
+    riscriverli non deve cancellarglieli (come per i `meta.json`).
+    """
+    data = read_json(persona_file(folder), None)
+    if not isinstance(data, dict):
+        return {}
+    return {**blank_persona(folder.name), **data, "learner": folder.name}
+
+
+def write_persona_file(folder: Path, persona: dict) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    merged = {**blank_persona(folder.name), **persona, "learner": folder.name}
+    write_json(persona_file(folder), merged)
+    return persona_file(folder)
+
+
+def read_persona(learner: str) -> dict:
+    return read_persona_file(learner_dir(learner))
+
+
+def write_persona(learner: str, persona: dict) -> Path:
+    return write_persona_file(learner_dir(learner), persona)
+
+
+def registro_effettivo(learner: str, override: str | None = None) -> str:
+    """Come si parla, in ordine di precedenza: sessione > persona > banda d'eta' > standard.
+
+    I tre livelli sanno cose diverse: la sessione sa cosa sta succedendo adesso, la
+    persona sa con chi si sta parlando, l'argomento sa cosa si sta insegnando (e del
+    tono non dice nulla: per questo non entra nella scala). Il registro non tocca i
+    contenuti, quindi nessuna di queste scelte riscrive i file di una sotto-skill.
+    """
+    if override:
+        return override
+    persona = read_persona(learner)
+    if persona.get("registro"):
+        return str(persona["registro"])
+    banda = DA_BANDA_A_PROFILO.get(str(persona.get("banda_eta") or ""))
+    return str(banda["registro"]) if banda else "standard"
+
+
+def livello_suggerito(learner: str) -> int | None:
+    """Livello da cui partire per un argomento nuovo, secondo la banda d'eta' dichiarata.
+
+    E' un suggerimento per l'agente, non un vincolo sul `meta.json`: l'argomento
+    resta di tutti, e la banda dice solo da dove e' ragionevole cominciare.
+    """
+    banda = DA_BANDA_A_PROFILO.get(str(read_persona(learner).get("banda_eta") or ""))
+    return int(banda["livello"]) if banda else None
+
+
 def other_profiles(learner: str, slug: str | None = None) -> list[dict]:
     """Profili diversi da quello selezionato, con quanti progressi contengono.
 
@@ -1213,7 +1440,7 @@ def other_profiles(learner: str, slug: str | None = None) -> list[dict]:
             continue
         folder = PROGRESS_DIR / name
         if slug is None:
-            count = len(list(folder.glob("*.json")))
+            count = len(topic_files(folder))
         else:
             count = 1 if (folder / f"{slug}.json").exists() else 0
         if count:
@@ -1318,6 +1545,13 @@ def cmd_log(args) -> None:
             "prossimo_passo": args.next or "",
         }
     )
+    if args.lesson:
+        # Il legame con la lezione preparata per la classe: se il file non c'e',
+        # il diario non deve poter raccontare una lezione mai scritta.
+        lezione = Path(args.lesson)
+        if not lezione.exists():
+            die(f"File della lezione non trovato: {lezione}")
+        data["log"][-1]["lezione"] = str(lezione)
 
     concepts = args.concept or []
     grades = args.grade or []
@@ -1370,29 +1604,168 @@ def cmd_log(args) -> None:
 
 
 def all_progress(learner: str) -> list[dict]:
-    folder = learner_dir(learner)
-    if not folder.exists():
-        return []
     out = []
-    for path in sorted(folder.glob("*.json")):
+    for path in topic_files(learner_dir(learner)):
         data = read_json(path, None)
         if isinstance(data, dict):
             out.append(data)
     return out
 
 
+def prova_dichiarata(learner: str) -> dict | None:
+    """La prova dichiarata nella persona del profilo, se c'e'."""
+    scadenza = read_persona(learner).get("scadenza")
+    if not isinstance(scadenza, dict) or not scadenza.get("data"):
+        return None
+    return {"data": str(scadenza["data"]), "obiettivo": scadenza.get("obiettivo"),
+            "argomento": scadenza.get("argomento")}
+
+
+def giorni_alla_prova(learner: str) -> int | None:
+    """Giorni che mancano alla prova dichiarata (0 = oggi, negativo = passata)."""
+    prova = prova_dichiarata(learner)
+    if not prova:
+        return None
+    try:
+        return (date.fromisoformat(prova["data"]) - date.today()).days
+    except ValueError:
+        return None   # data illeggibile: meglio nessun piano che un piano inventato
+
+
+def moduli_nel_topic(slug: str) -> int | None:
+    """Quanti moduli ha una sotto-skill: le intestazioni `## Modulo N` di percorso.md."""
+    path = topic_dir(slug) / "percorso.md"
+    if not path.exists():
+        return None
+    return len(re.findall(r"^##\s+Modulo\s+\d+", read_text(path), flags=re.MULTILINE))
+
+
+def moduli_visti(data: dict) -> set[int]:
+    """I numeri dei moduli gia' seguiti, ricavati dalle etichette di `log --module`.
+
+    `modules_seen` contiene quello che l'agente ha passato ("2", "Modulo 2",
+    "modulo 2: somma pesata"): si prende il primo numero di ogni voce, così
+    l'etichetta libera non rende impossibile il conteggio.
+    """
+    visti = set()
+    for voce in data.get("modules_seen") or []:
+        numero = re.search(r"\d+", str(voce))
+        if numero:
+            visti.add(int(numero.group()))
+    return visti
+
+
+def stima_minuti_per_modulo(data: dict) -> int:
+    """Quanto e' costato finora un modulo a questo allievo (stima, non misura)."""
+    visti = len(moduli_visti(data))
+    if data.get("sessions") and visti:
+        return max(10, round(int(data.get("total_minutes") or 0) / visti))
+    return MINUTI_PER_MODULO_DEFAULT
+
+
+def piano_di_studio(learner: str) -> dict:
+    """Con la scadenza e il tempo dichiarati, il materiale che resta ci sta?
+
+    E' una **stima**, e va presentata come tale: usa la media dei minuti per modulo
+    delle sessioni passate e conta solo gli argomenti gia' avviati (piu' quello
+    indicato nella scadenza). Serve a decidere cosa fare adesso, non a promettere
+    un voto.
+    """
+    prova = prova_dichiarata(learner)
+    budget = read_persona(learner).get("budget_minuti_settimana")
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        budget = None
+    if not prova and not budget:
+        return {}
+
+    argomenti = []
+    slugs = [d.get("slug") for d in all_progress(learner) if d.get("slug")]
+    if prova and prova.get("argomento") and prova["argomento"] not in slugs:
+        slugs.append(prova["argomento"])
+    for slug in slugs:
+        totali = moduli_nel_topic(slug)
+        if totali is None:
+            continue   # argomento non su disco: non entra nella stima
+        data = progress_for(slug, learner)
+        visti = len(moduli_visti(data))
+        rimasti = max(0, totali - visti)
+        per_modulo = stima_minuti_per_modulo(data)
+        argomenti.append({
+            "topic": slug, "moduli_totali": totali, "moduli_visti": visti,
+            "moduli_rimasti": rimasti, "minuti_stimati_per_modulo": per_modulo,
+            "minuti_rimasti": rimasti * per_modulo,
+        })
+
+    limite = (date.today() - timedelta(days=6)).isoformat()
+    minuti_sette = sum(
+        int(voce.get("minuti") or 0)
+        for d in all_progress(learner)
+        for voce in (d.get("log") or [])
+        if str(voce.get("date") or "") >= limite
+    )
+    giorni = giorni_alla_prova(learner)
+    disponibili = round(budget * giorni / 7) if budget and giorni and giorni > 0 else None
+    minuti_rimasti = sum(a["minuti_rimasti"] for a in argomenti)
+    return {
+        "stima": True,
+        "scadenza": prova,
+        "giorni_alla_prova": giorni,
+        "budget_minuti_settimana": budget,
+        "minuti_ultimi_7_giorni": minuti_sette,
+        "argomenti": argomenti,
+        "moduli_rimasti": sum(a["moduli_rimasti"] for a in argomenti),
+        "minuti_rimasti_stimati": minuti_rimasti,
+        "minuti_disponibili_stimati": disponibili,
+        "ci_sta": (disponibili >= minuti_rimasti) if disponibili is not None else None,
+        "nota": "Stima basata sui minuti per modulo delle sessioni passate e sui moduli non "
+                "ancora visti: conta solo gli argomenti gia' avviati (piu' quello della scadenza).",
+    }
+
+
+def passo_dalla_scadenza(piano: dict) -> str | None:
+    """La prova dichiarata ha la precedenza sul resto, quando c'e'."""
+    if not piano or piano.get("giorni_alla_prova") is None:
+        return None
+    giorni = piano["giorni_alla_prova"]
+    data_prova = (piano.get("scadenza") or {}).get("data")
+    if giorni < 0:
+        return (f"La prova del {data_prova} e' passata: dimenticala con "
+                "`iv.py learner persona --senza-scadenza`.")
+    if giorni == 0:
+        return "La prova e' oggi: solo recupero attivo, niente materiale nuovo."
+    quando = f"La prova e' fra {giorni} giorni"
+    if piano.get("ci_sta") is False:
+        return (f"{quando} e la stima dice che il materiale non ci sta "
+                f"({piano['minuti_rimasti_stimati']} minuti per {piano['moduli_rimasti']} moduli "
+                f"contro {piano['minuti_disponibili_stimati']} disponibili): taglia i moduli meno "
+                "probabili in prova e dillo all'allievo.")
+    if piano.get("ci_sta") is True:
+        return (f"{quando}: la stima dice che ci sta ({piano['moduli_rimasti']} moduli, circa "
+                f"{piano['minuti_rimasti_stimati']} minuti).")
+    return (f"{quando}: dichiara un budget di tempo (`learner persona --budget-minuti N`) per "
+            "sapere se il materiale ci sta.")
+
+
 def due_items(learner: str, within: int) -> dict:
     limit = (date.today() + timedelta(days=within)).isoformat()
-    argomenti, concetti = [], []
+    prova = prova_dichiarata(learner)
+    argomenti, concetti, dopo_la_prova = [], [], []
     for data in all_progress(learner):
         slug = data.get("slug", "?")
         for card in (data.get("concepts") or {}).values():
-            if card.get("due") and card["due"] <= limit:
+            if not card.get("due"):
+                continue
+            if card["due"] <= limit:
                 concetti.append(
                     {"topic": slug, "concetto": card.get("name", "?"), "scadenza": card["due"],
                      "intervallo_giorni": card.get("interval"), "ease": card.get("ease"),
-                     "lacune": card.get("lapses", 0)}
+                     "lacune": card.get("lapses", 0),
+                     # il ripasso programmato cadrebbe dopo la prova: va anticipato
+                     "oltre_la_prova": bool(prova and card["due"] > prova["data"])}
                 )
+            if prova and card["due"] > prova["data"]:
+                dopo_la_prova.append({"topic": slug, "concetto": card.get("name", "?"),
+                                      "scadenza": card["due"]})
         last = data.get("last_session") or ""
         try:
             giorni = (date.today() - date.fromisoformat(last)).days if last else 0
@@ -1402,15 +1775,38 @@ def due_items(learner: str, within: int) -> dict:
             argomenti.append({"topic": slug, "ultima_sessione": last, "giorni_fa": giorni})
     concetti.sort(key=lambda c: c["scadenza"])
     argomenti.sort(key=lambda a: a["giorni_fa"], reverse=True)
-    return {"ok": True, "learner": learner_dir(learner).name, "entro_il": limit,
-            "concetti_da_ripassare": concetti, "argomenti_stagnanti": argomenti}
+    payload = {"ok": True, "learner": learner_dir(learner).name, "entro_il": limit,
+               "concetti_da_ripassare": concetti, "argomenti_stagnanti": argomenti}
+    if prova:
+        payload["prova"] = {
+            "data": prova["data"], "obiettivo": prova.get("obiettivo"),
+            "giorni_rimasti": giorni_alla_prova(learner),
+            "da_anticipare": sorted(dopo_la_prova, key=lambda c: c["scadenza"]),
+        }
+    return payload
 
 
 def cmd_due(args) -> None:
     payload = due_items(args.learner, args.within)
-    if args.json or not payload["concetti_da_ripassare"] and not payload["argomenti_stagnanti"]:
+    # JSON quando non c'e' niente da dire (o quando lo chiede l'agente); altrimenti
+    # testo, anche quando l'unica cosa da dire e' che una prova si avvicina.
+    niente_da_dire = (
+        not payload["concetti_da_ripassare"] and not payload["argomenti_stagnanti"]
+        and not (payload.get("prova") or {}).get("da_anticipare")
+    )
+    if args.json or niente_da_dire:
         emit(payload)
     lines = [f"# Ripassi entro il {payload['entro_il']}", ""]
+    if payload.get("prova"):
+        prova = payload["prova"]
+        attesa = (f"{len(prova['da_anticipare'])} concetti cadrebbero dopo la prova e vanno anticipati"
+                  if prova["da_anticipare"] else "nessun concetto cade oltre la prova")
+        lines += [f"**Prova il {prova['data']}** ({prova['giorni_rimasti']} giorni): {attesa}.", ""]
+        if prova["da_anticipare"]:
+            lines += ["## Da anticipare prima della prova", ""]
+            lines += [f"- `{c['concetto']}` ({c['topic']}) — previsto per il {c['scadenza']}"
+                      for c in prova["da_anticipare"]]
+            lines.append("")
     if payload["concetti_da_ripassare"]:
         lines += ["## Concetti in scadenza", ""]
         lines += [
@@ -1565,6 +1961,8 @@ def cmd_list(args) -> None:
                 "base_version": entry.get("base_version"),
                 "sessioni": progress.get("sessions", 0),
                 "ultima": progress.get("last_session") or "mai",
+                # quanti materiali dell'utente sono agganciati: sono la fonte da privilegiare
+                "materiali": len(read_materiali(entry["slug"])),
                 "da_rigenerare": frame_state(entry)["da_rigenerare"],
                 "cornice_aggiornabile": frame_state(entry)["aggiornabile"],
             }
@@ -1575,7 +1973,8 @@ def cmd_list(args) -> None:
               "argomenti": rows, "altri_profili": altri})
     if not rows:
         emit({"ok": True}, as_text="Nessun argomento nel registro: al primo avvio se ne crea uno.")
-    lines = ["| Argomento | Slug | Stato | Livello | Sessioni | Ultima | Cornice |", "|---|---|---|---|---|---|---|"]
+    lines = ["| Argomento | Slug | Stato | Livello | Sessioni | Ultima | Materiali | Cornice |",
+             "|---|---|---|---|---|---|---|---|"]
     for r in rows:
         flag = (
             "da rigenerare" if r["da_rigenerare"]
@@ -1583,7 +1982,8 @@ def cmd_list(args) -> None:
             else r["base_version"]
         )
         lines.append(
-            f"| {r['title']} | `{r['slug']}` | {r['stato']} | {r['livello']} | {r['sessioni']} | {r['ultima']} | {flag} |"
+            f"| {r['title']} | `{r['slug']}` | {r['stato']} | {r['livello']} | {r['sessioni']} | "
+            f"{r['ultima']} | {r['materiali']} | {flag} |"
         )
     if altri:
         # Visibilita' sui progressi registrati sotto un altro nome allievo: senza
@@ -1675,7 +2075,7 @@ def merge_progress_data(source: dict, target: dict) -> dict:
 
 def profile_summary(folder: Path) -> dict:
     """Contenuto di un profilo: serve a elencare, rinominare e cancellare."""
-    files = sorted(folder.glob("*.json"))
+    files = topic_files(folder)
     sessions = minutes = 0
     slugs = []
     for path in files:
@@ -1743,11 +2143,14 @@ def cmd_learner(args) -> None:
             through.rename(target_dir)
         else:
             source_dir.rename(target_dir)
-        for path in sorted(target_dir.glob("*.json")):
+        for path in topic_files(target_dir):
             data = read_json(path, None)
             if isinstance(data, dict):
                 data["learner"] = target_dir.name
                 write_json(path, data)
+        persona = read_persona_file(target_dir)
+        if persona:
+            write_persona_file(target_dir, persona)   # solo per riallineare `learner`
         aliases = rewrite_profile_aliases(source_dir.name, target_dir.name)
         diary = write_diary(target_dir.name)
         emit(
@@ -1777,6 +2180,7 @@ def cmd_learner(args) -> None:
             "profilo": target_dir.name, "cartella": str(target_dir),
             "argomenti": summary["argomenti"], "sessioni": summary["sessioni"],
             "minuti": summary["minuti"], "slug": summary["slug"],
+            "persona": read_persona_file(target_dir) or None,
             "alias_che_verrebbero_rimossi": removed,
             "irreversibile": "sessioni, voti, lacune e diario di questo profilo vanno persi; "
                              "le sotto-skill e gli altri profili non si toccano",
@@ -1794,6 +2198,102 @@ def cmd_learner(args) -> None:
         emit({"ok": True, "azione": "Profilo allievo cancellato", **payload,
               "alias_rimossi": removed})
 
+    if args.action == "persona":
+        folder = learner_dir(args.learner)
+        if args.reset:
+            path = persona_file(folder)
+            if not path.exists():
+                die(f"Il profilo '{folder.name}' non ha una persona dichiarata da dimenticare.")
+            path.unlink()
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()   # senza progressi e senza persona non resta nulla da elencare
+            emit({
+                "ok": True, "azione": "Persona dimenticata", "learner": folder.name,
+                "file": str(path),
+                "nota": "I progressi non si toccano: si azzerano soltanto banda d'eta', tempi "
+                        "e scadenza dichiarati.",
+            })
+
+        if args.scadenza and args.senza_scadenza:
+            die("`--scadenza` e `--senza-scadenza` dicono cose opposte: scegline una.")
+
+        persona = read_persona(args.learner)
+        dichiara = any(
+            [args.banda_eta, args.configurato_da, args.budget_minuti is not None, args.registro,
+             args.scadenza, args.obiettivo, args.scadenza_argomento, args.senza_scadenza]
+        )
+        if dichiara:
+            if args.banda_eta:
+                persona["banda_eta"] = args.banda_eta
+                # la banda invecchia: senza la data, fra due anni sarebbe una bugia
+                persona["banda_eta_aggiornata"] = today()
+            if args.registro:
+                # dichiararlo a mano vince su quello che propone la banda d'eta'
+                persona["registro"] = args.registro
+            if args.configurato_da:
+                persona["configurato_da"] = args.configurato_da
+            if args.budget_minuti is not None:
+                if args.budget_minuti <= 0:
+                    die("Il budget di tempo va espresso in minuti a settimana (maggiore di zero).")
+                persona["budget_minuti_settimana"] = args.budget_minuti
+            if args.senza_scadenza:
+                persona["scadenza"] = None
+            if args.scadenza:
+                persona["scadenza"] = {
+                    "data": iso_date(args.scadenza),
+                    "obiettivo": args.obiettivo,
+                    "argomento": args.scadenza_argomento,
+                }
+            elif args.obiettivo or args.scadenza_argomento:
+                corrente = persona.get("scadenza")
+                if not isinstance(corrente, dict) or not corrente.get("data"):
+                    die("`--obiettivo` e `--scadenza-argomento` vanno con `--scadenza YYYY-MM-DD`.")
+                persona["scadenza"] = {
+                    "data": corrente["data"],
+                    "obiettivo": args.obiettivo or corrente.get("obiettivo"),
+                    "argomento": args.scadenza_argomento or corrente.get("argomento"),
+                }
+            persona["aggiornato"] = today()
+            path = write_persona(args.learner, persona)
+            emit({
+                "ok": True, "azione": "Persona aggiornata", "learner": folder.name,
+                "file": str(path), "persona": persona,
+                "registro_effettivo": registro_effettivo(folder.name),
+                "livello_suggerito": livello_suggerito(folder.name),
+                "nota": "`banda_eta` e' dichiarata e non verificata: il motore la usa come input "
+                        "per proporre livello e registro, non come un fatto accertato.",
+            })
+
+        esiste = persona_file(folder).exists()
+        payload = {
+            "ok": True, "learner": folder.name, "esiste": esiste,
+            "file": str(persona_file(folder)),
+            "persona": persona or blank_persona(folder.name),
+            "registro_effettivo": registro_effettivo(folder.name),
+            "livello_suggerito": livello_suggerito(folder.name),
+        }
+        if args.json:
+            emit(payload)
+        dichiarata = payload["persona"]
+        scadenza = dichiarata.get("scadenza")
+        scadenza = scadenza if isinstance(scadenza, dict) else {}
+        budget = dichiarata.get("budget_minuti_settimana")
+        righe = [
+            "| Campo | Valore |", "|---|---|",
+            f"| Profilo | {payload['learner']} |",
+            f"| Banda d'eta' | {dichiarata.get('banda_eta') or '--'} |",
+            f"| Banda aggiornata il | {dichiarata.get('banda_eta_aggiornata') or '--'} |",
+            f"| Registro | {payload['registro_effettivo']} |",
+            f"| Livello suggerito | {payload['livello_suggerito'] or '--'} |",
+            f"| Configurato da | {dichiarata.get('configurato_da') or '--'} |",
+            f"| Budget | {str(budget) + ' min/settimana' if budget else '--'} |",
+            f"| Scadenza | {scadenza.get('data') or '--'}"
+            + (f" (obiettivo {scadenza['obiettivo']})" if scadenza.get("obiettivo") else "") + " |",
+        ]
+        if not esiste:
+            righe.append("\n_Nessuna persona dichiarata: chiedila al primo avvio, e solo allora._")
+        emit(payload, as_text="\n".join(righe))
+
     if args.action != "merge":
         die(f"Azione '{args.action}' non riconosciuta.")
 
@@ -1810,7 +2310,7 @@ def cmd_learner(args) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     source_dir = learner_dir(source)
     uniti = []
-    for path in sorted(source_dir.glob("*.json")):
+    for path in topic_files(source_dir):
         incoming = read_json(path, None)
         if not isinstance(incoming, dict):
             continue
@@ -1830,6 +2330,18 @@ def cmd_learner(args) -> None:
     source_diary = source_dir / "DIARIO.md"
     if source_diary.exists():
         source_diary.unlink()
+    # La persona segue i progressi, e il file del profilo assorbito non deve
+    # sopravvivere da solo: resterebbe un profilo zombie fatto di soli metadati.
+    source_persona = read_persona_file(source_dir)
+    persona_esito = "nessuna"
+    if source_persona:
+        if read_persona_file(target_dir):
+            persona_esito = "destinazione"   # la persona già dichiarata vince
+        else:
+            source_persona["learner"] = target_dir.name
+            write_persona_file(target_dir, source_persona)
+            persona_esito = "adottata"
+        persona_file(source_dir).unlink()
     if not any(source_dir.iterdir()):
         source_dir.rmdir()
 
@@ -1847,12 +2359,29 @@ def cmd_learner(args) -> None:
             "argomenti": uniti,
             "alias_registrato": {source_dir.name: target_dir.name},
             "diario": str(diary),
+            "persona": persona_esito,
             "nota": (
                 f"Da adesso `--learner {source_dir.name}` (e l'omissione di --learner se sul profilo "
                 f"'{source_dir.name}') scrive in '{target_dir.name}': i progressi non si riseparano."
             ),
         }
     )
+
+
+def passo_tecnico(drafts: list, stale: list, updateable: list, altri: list, ha_progressi: bool) -> str:
+    """Cosa fare adesso lato manutenzione: bozze, cornice vecchia, profili sbagliati."""
+    if drafts:
+        return "Completa le bozze: " + ", ".join(drafts)
+    if stale:
+        return "Rigenera gli argomenti con cornice vecchia: " + ", ".join(stale)
+    if updateable:
+        return ("Nessun debito bloccante. Aggiornamento opzionale (cornice "
+                f"{BASE_VERSION}) disponibile per: " + ", ".join(updateable))
+    if altri and not ha_progressi:
+        return ("I progressi sono in un altro profilo allievo ("
+                + ", ".join(a["learner"] for a in altri)
+                + "): rilancia il comando con `--learner <nome>`.")
+    return "Nessun debito tecnico: puoi dedicarti allo studio."
 
 
 def cmd_status(args) -> None:
@@ -1865,6 +2394,7 @@ def cmd_status(args) -> None:
     profili = learner_profiles()
     altri = other_profiles(args.learner)
     resolved = learner_dir(args.learner).name
+    piano = piano_di_studio(args.learner)
     payload = {
         "ok": True,
         "base_version": BASE_VERSION,
@@ -1878,24 +2408,683 @@ def cmd_status(args) -> None:
         "da_rigenerare": stale,
         "cornice_aggiornabile": updateable,
         "ripassi_oggi": len(due["concetti_da_ripassare"]),
-        "prossimo_passo": (
-            "Completa le bozze: " + ", ".join(drafts) if drafts
-            else "Rigenera gli argomenti con cornice vecchia: " + ", ".join(stale) if stale
-            else (
-                "Nessun debito bloccante. Aggiornamento opzionale (cornice "
-                f"{BASE_VERSION}) disponibile per: " + ", ".join(updateable)
-                if updateable else
-                (
-                    "I progressi sono in un altro profilo allievo ("
-                    + ", ".join(a["learner"] for a in altri)
-                    + "): rilancia il comando con `--learner <nome>`."
-                    if altri and not any(learner_dir(args.learner).glob("*.json")) else
-                    "Nessun debito tecnico: puoi dedicarti allo studio."
-                )
-            )
+        "piano": piano,
+        "strumenti": strumenti_riassunto(),
+        "prossimo_passo": passo_dalla_scadenza(piano) or passo_tecnico(
+            drafts, stale, updateable, altri, bool(topic_files(learner_dir(args.learner)))
         ),
     }
     emit(payload)
+
+
+# ---------------------------------------------------------------- lezioni del docente
+
+def lezioni_di(slug: str) -> list[Path]:
+    """Le lezioni salvate per un argomento, in ordine di data (il nome inizia con la data)."""
+    folder = LEZIONI_DIR / slug
+    if not folder.is_dir():
+        return []
+    return sorted(folder.glob("*.md"))
+
+
+def sezione(text: str, heading: str) -> str:
+    """Corpo di una sezione Markdown: dal titolo fino alla sezione successiva."""
+    idx = text.find(heading)
+    if idx == -1:
+        return ""
+    resto = text[idx + len(heading):]
+    fine = resto.find("\n## ")
+    return resto if fine == -1 else resto[:fine]
+
+
+def conta_voci(corpo: str) -> int:
+    """Quante voci contiene una sezione: elenchi puntati, numerati o sotto-titoli."""
+    voci = 0
+    for line in corpo.splitlines():
+        stripped = line.strip()
+        if re.match(r"^(?:[-*•]|\d+[.)])\s+\S", stripped) or re.match(r"^#{3,6}\s+\S", stripped):
+            voci += 1
+    return voci
+
+
+def lezione_problemi(path: Path, level: int, registro: str | None = None) -> dict:
+    """Verifica una lezione per il docente: sezioni, sostanza minima, leggibilita'.
+
+    Non guarda la verita' di quello che c'e' scritto (come `validate_topic`): guarda
+    che l'artefatto esista davvero, che non sia rimasto uno scheletro, e che il testo
+    stia negli obiettivi di leggibilita' del livello e del registro dichiarati.
+    """
+    problemi: list[dict] = []
+
+    def err(message: str) -> None:
+        problemi.append({"livello": "errore", "messaggio": message})
+
+    def warn(message: str) -> None:
+        problemi.append({"livello": "avviso", "messaggio": message})
+
+    if not path.exists():
+        return {"file": str(path), "valido": False, "errori": 1, "avvisi": 0,
+                "problemi": [{"livello": "errore", "messaggio": f"File assente: {path}"}]}
+
+    text = read_text(path)
+    for heading in LEZIONE_HEADINGS:
+        if heading not in text:
+            err(f"manca la sezione '{heading}'")
+    resti = re.findall(r"\{\{[^}]*\}\}", text)
+    if resti:
+        err(f"placeholder non sostituiti ({', '.join(sorted(set(resti)))})")
+    if "ISTRUZIONI:" in text:
+        err("restano blocchi 'ISTRUZIONI:' da compilare")
+
+    scaletta = count_table_rows(text, "## Scaletta")
+    if scaletta < 3:
+        err(f"scaletta con {scaletta} righe: servono almeno 3 tempi (apertura, centro, chiusura)")
+    for heading, minimo in (("## Esempi alla lavagna", 2),
+                            ("## Esercizi con soluzioni", 2),
+                            ("## Domande probabili", 3)):
+        voci = conta_voci(sezione(text, heading))
+        if voci < minimo:
+            err(f"{heading[3:].lower()}: {voci} voci, ne servono almeno {minimo}")
+
+    metrics = style_metrics(text)
+    for problema in style_problems(metrics, level, registro):
+        warn(f"leggibilita': {problema}")
+
+    errori = len([p for p in problemi if p["livello"] == "errore"])
+    return {"file": str(path), "valido": not errori, "errori": errori,
+            "avvisi": len(problemi) - errori, "problemi": problemi,
+            "livello": int(level or 2), "registro": registro or "standard",
+            "gulpease": metrics.get("gulpease"), "parole_frase": metrics.get("parole_frase")}
+
+
+def cmd_lezione(args) -> None:
+    """Crea o verifica la lezione per una classe (materiale del docente, non dell'allievo)."""
+    reg = sync_from_disk(load_registry())
+    entry = find_entry(reg, args.slug)
+    if not entry:
+        die(f"Argomento '{args.slug}' non nel registro: una lezione si prepara su un argomento esistente.")
+    slug = entry["slug"]
+    livello = args.level or entry.get("level") or 2
+
+    if args.check:
+        files = lezioni_di(slug)
+        path = Path(args.file) if args.file else (files[-1] if files else None)
+        if path is None:
+            die(f"Nessuna lezione salvata per '{slug}': creala con "
+                f"`iv.py lezione {slug} --classe \"...\"`.")
+        esito = lezione_problemi(path, livello, args.registro)
+        payload = {"ok": esito["valido"], "azione": "Lezione verificata", "slug": slug, **esito}
+        if args.json:
+            emit(payload, code=0 if esito["valido"] else 1)
+        lines = [f"# Lezione: {path.name}", ""]
+        lines += [f"- [{p['livello']}] {p['messaggio']}" for p in esito["problemi"]]
+        if not esito["problemi"]:
+            lines.append("- Nessun problema: sezioni al completo e sostanza minima presente.")
+        emit(payload, as_text="\n".join(lines), code=0 if esito["valido"] else 1)
+
+    if not LEZIONE_TEMPLATE.exists():
+        die(f"Template della lezione mancante: {LEZIONE_TEMPLATE}")
+    giorno = iso_date(args.giorno) if args.giorno else today()
+    classe = (args.classe or "classe").strip()
+    path = LEZIONI_DIR / slug / f"{giorno}-{slugify(classe)}.md"
+    if path.exists() and not args.force:
+        die(f"Esiste gia' {path}: usa --force per riscriverla, o cambia --data/--classe.")
+    testo = read_text(LEZIONE_TEMPLATE)
+    for segno, valore in (
+        ("{{TITLE}}", entry.get("title") or slug), ("{{SLUG}}", slug), ("{{CLASSE}}", classe),
+        ("{{DATA}}", giorno), ("{{MINUTI}}", str(int(args.minuti or 60))),
+        ("{{LEVEL}}", str(int(livello))), ("{{REGISTRO}}", args.registro or "standard"),
+    ):
+        testo = testo.replace(segno, valore)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(testo, encoding="utf-8")
+    emit({
+        "ok": True, "azione": "Lezione creata", "slug": slug, "file": str(path),
+        "classe": classe, "data": giorno, "livello": int(livello),
+        "registro": args.registro or "standard", "sezioni_obbligatorie": list(LEZIONE_HEADINGS),
+        "prossimi_passi": "Compila le sezioni al posto dei blocchi ISTRUZIONI, poi "
+                          f"`python scripts/iv.py lezione {slug} --check`.",
+    })
+
+
+# ---------------------------------------------------------------- materiali dell'utente
+
+def materiali_folder(slug: str) -> Path:
+    return MATERIALI_DIR / slug
+
+
+def testi_di(slug: str, voce: dict) -> list[dict]:
+    """Gli estratti di testo collegati a un materiale, senza quelli spariti dal disco."""
+    folder = materiali_folder(slug)
+    out = []
+    for testo in voce.get("testi") or []:
+        if isinstance(testo, dict) and testo.get("file") \
+                and (folder / str(testo["file"])).exists():
+            out.append(testo)
+    return out
+
+
+def read_materiali(slug: str) -> list[dict]:
+    """I materiali registrati per un argomento, senza le voci il cui file non c'e' piu'.
+
+    `materiali.json` e' scritto dal motore, `INDICE.md` e' derivato: se qualcuno
+    cancella un file a mano, la voce non deve restare a raccontare un materiale —
+    o un testo — che non esiste piu'.
+    """
+    folder = materiali_folder(slug)
+    data = read_json(folder / "materiali.json", None)
+    if not isinstance(data, list):
+        return []
+    voci = []
+    for voce in data:
+        if not isinstance(voce, dict) or not voce.get("file"):
+            continue
+        if not (folder / str(voce["file"])).exists():
+            continue
+        voci.append({**voce, "testi": testi_di(slug, voce)})
+    return voci
+
+
+def materiali_indice(slug: str) -> str:
+    """L'indice leggibile (`INDICE.md`): file derivato da `materiali.json`."""
+    voci = read_materiali(slug)
+    righe = [
+        f"# Materiali: {slug}", "",
+        "Materiale fornito dall'utente: quando c'e', e' la **fonte da privilegiare** sui "
+        "contenuti generati, e va citato in `fonti.md` come materiale dell'utente.", "",
+        "Solo i materiali **con testo trascritto** sono cercabili: senza trascrizione un PDF "
+        "resta visibile a chi lo legge, non a `materiali search`.", "",
+        "| File | Tipo | Titolo | Testo | Pagine | Aggiunto | Byte |", "|---|---|---|---|---|---|---|",
+    ]
+    for voce in voci:
+        testi = voce.get("testi") or []
+        if not testi:
+            stato = "**no** (non cercabile)"
+        else:
+            n_righe = sum(int(t.get("righe") or 0) for t in testi)
+            mezzi = ", ".join(sorted({t.get("mezzo") or MEZZO_NON_DICHIARATO for t in testi}))
+            controllato = "verificata a campione" if any(t.get("campione") for t in testi) \
+                else "**non verificata**"
+            quanti = f"{len(testi)} testi" if len(testi) > 1 else "1 testo"
+            stato = f"sì ({quanti}, {n_righe} righe; mezzo: {mezzi}; {controllato})"
+        pagine = ", ".join(str(t.get("pagine")) for t in testi if t.get("pagine")) or "—"
+        righe.append(f"| `{voce['file']}` | {voce.get('tipo') or 'altro'} | "
+                     f"{voce.get('titolo') or ''} | {stato} | {pagine} | "
+                     f"{voce.get('aggiunto') or ''} | {voce.get('byte') or ''} |")
+    if not voci:
+        righe.append("| (nessun materiale) |  |  |  |  |  |  |")
+    # Dettaglio per trascrizione: di un materiale possono esistere piu' copie (es. estratte con e
+    # senza `-layout`, o un capitolo per volta) e sapere *quali* ci sono serve per citarle.
+    dettaglio = []
+    for voce in voci:
+        for testo in voce.get("testi") or []:
+            campione = testo.get("campione") or ""
+            # Le trascrizioni registrate prima della 1.7.0 non hanno `sorgente`: si dice, non si inventa.
+            provenienza = (f"`{testo['sorgente']}`" if testo.get("sorgente")
+                           else "*origine non registrata*")
+            dettaglio.append(
+                f"- `{voce['file']}` ← {provenienza} → `{testo['file']}` "
+                f"({testo.get('caratteri') or 0} caratteri, {testo.get('righe') or 0} righe; "
+                f"pagine {testo.get('pagine') or '—'}; mezzo {testo.get('mezzo') or MEZZO_NON_DICHIARATO}"
+                f"{'; campione: ' + campione if campione else ''})")
+    if dettaglio:
+        righe += ["", "## Trascrizioni", ""] + dettaglio
+    return "\n".join(righe) + "\n"
+
+
+def write_materiali(slug: str, voci: list[dict]) -> Path:
+    folder = materiali_folder(slug)
+    folder.mkdir(parents=True, exist_ok=True)
+    write_json(folder / "materiali.json", voci)
+    indice = folder / "INDICE.md"
+    indice.write_text(materiali_indice(slug), encoding="utf-8")
+    return indice
+
+
+def comando_esiste(nome: str) -> bool:
+    """Se un eseguibile e' raggiungibile sul PATH di **questa** macchina."""
+    return shutil.which(nome) is not None
+
+
+def modulo_esiste(nome: str) -> bool:
+    """Se un modulo Python e' importabile, senza importarlo (non deve avere effetti)."""
+    try:
+        return importlib.util.find_spec(nome) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def strumenti_disponibili(trovati: dict | None = None) -> dict:
+    """Quali attrezzi di estrazione ci sono **su questa macchina**.
+
+    `trovati` permette di passare un rilevamento gia' fatto: serve ai test e a chi vuole
+    interrogare il motore senza toccare la macchina.
+    """
+    if trovati is None:
+        trovati = {
+            voce["chiave"]: (comando_esiste(voce["nome"]) if voce["tipo"] == "comando"
+                             else modulo_esiste(voce["nome"]))
+            for voce in STRUMENTI_PDF
+        }
+    return {voce["chiave"]: bool(trovati.get(voce["chiave"])) for voce in STRUMENTI_PDF}
+
+
+def metodo_estrazione(disponibili: dict) -> dict:
+    """Cosa consigliare, date le capacita' della macchina. Funzione pura: solo dati.
+
+    Risponde alla domanda che conta prima di trascrivere: **posso copiare, o devo leggere?**
+    Perche' da li' dipende quanto ci si puo' fidare e quanto controllo serve: una copia
+    meccanica si controlla per campione, una lettura a vista si controlla per forza.
+    """
+    meccanici = [v for v in STRUMENTI_PDF if v["mezzo"] and disponibili.get(v["chiave"])]
+    if meccanici:
+        primo = meccanici[0]
+        alternativa = primo.get("alternativa")
+        return {
+            "copia_meccanica": True,
+            "metodo_consigliato": primo["comando"],
+            "metodo_alternativo": alternativa,
+            "quando_cambiare": (
+                "Guarda i primi righi dell'estratto: se vedi un titolo, un riquadro centrato o un "
+                "numero di pagina **in mezzo a una frase**, rifai l'estrazione senza `-layout` "
+                "(che conserva elenchi e tabelle ma intreccia gli elementi centrati) e tieni la "
+                "versione che si legge meglio. Le due copie possono convivere: il nome della "
+                "trascrizione viene dal file di origine.") if alternativa else None,
+            "mezzo_da_dichiarare": "testo",
+            "controllo_a_campione": "consigliato",
+            "perche": (f"'{primo['chiave']}' e' disponibile su questa macchina: il testo si estrae "
+                       f"dal PDF invece di essere letto, quindi la trascrizione e' una copia. "
+                       f"Comando: `{primo['comando']}`. Dichiara --mezzo testo; il controllo a "
+                       f"campione resta un campionamento di sicurezza, non una necessita'."),
+        }
+    return {
+        "copia_meccanica": False,
+        "metodo_consigliato": None,
+        "metodo_alternativo": None,
+        "quando_cambiare": None,
+        "mezzo_da_dichiarare": "vista",
+        "controllo_a_campione": "obbligatorio",
+        "perche": ("Nessuno strumento meccanico su questa macchina: il testo lo produce la tua "
+                   "lettura del PDF. Dichiaralo come --mezzo vista (o ocr se e' passato da un "
+                   "OCR) e **fai il controllo a campione** di tre citazioni prima di trattare la "
+                   "trascrizione come fonte: senza copia meccanica la fedelta' non e' verificabile."),
+    }
+
+
+def strumenti_riassunto() -> dict:
+    """Versione breve per `status`: cosa puo' fare questa macchina, in poche chiavi."""
+    metodo = metodo_estrazione(strumenti_disponibili())
+    return {"copia_meccanica": metodo["copia_meccanica"],
+            "metodo": metodo["metodo_consigliato"],
+            "mezzo": metodo["mezzo_da_dichiarare"]}
+
+
+def cmd_strumenti(args) -> None:
+    """Cosa c'e' su questa macchina per estrarre il testo: rileva, non esegue mai."""
+    disponibili = strumenti_disponibili()
+    payload = {
+        "ok": True,
+        "azione": "Strumenti di estrazione su questa macchina",
+        "disponibili": disponibili,
+        "dettaglio": [{"chiave": v["chiave"], "presente": disponibili[v["chiave"]],
+                       "comando": v["comando"], "reso": v["reso"]} for v in STRUMENTI_PDF],
+        **metodo_estrazione(disponibili),
+        "nota": ("Sono attrezzi opzionali, non dipendenze della skill: se mancano si legge a vista "
+                 "e si controlla a campione. Il motore li **rileva e non li esegue**: l'estrazione "
+                 "resta a chi conduce la sessione, che e' anche l'unico a poter controllare il "
+                 "risultato."),
+        "prossimi_passi": "Trascrivi il materiale, poi collegalo con `materiali testo` dichiarando "
+                          "`--pagine`, `--mezzo` e `--campione`.",
+    }
+    if args.json:
+        emit(payload)
+    righe = ["# Strumenti di estrazione su questa macchina", ""]
+    for voce in payload["dettaglio"]:
+        righe.append(f"{'[sì]' if voce['presente'] else '[no]'} `{voce['chiave']}` — {voce['reso']}")
+    righe += ["", f"**Copia meccanica possibile:** {'sì' if payload['copia_meccanica'] else 'no'}",
+              f"**Da dichiarare:** `--mezzo {payload['mezzo_da_dichiarare']}`",
+              f"**Controllo a campione:** {payload['controllo_a_campione']}", "", payload["perche"]]
+    if payload.get("metodo_alternativo"):
+        righe += [f"**Alternativa:** `{payload['metodo_alternativo']}`",
+                  "", payload["quando_cambiare"]]
+    emit(payload, as_text="\n".join(righe))
+
+
+def pagine_dichiarate(valore: str) -> int | None:
+    """Quante pagine copre un testo dichiarato come "40", "1-40" o "12-40".
+
+    Altro ("cap. 3", "dispense") non e' un numero di pagine e non consente il
+    controllo di plausibilita': meglio nessun controllo che un controllo inventato.
+    """
+    trovato = re.match(r"^\s*(\d+)\s*(?:[-–]\s*(\d+)\s*)?$", str(valore or ""))
+    if not trovato:
+        return None
+    inizio = int(trovato.group(1))
+    fine = int(trovato.group(2)) if trovato.group(2) else inizio
+    if fine < inizio or inizio < 1:
+        return None
+    return fine - inizio + 1
+
+
+def testo_utf8(path: Path) -> str:
+    """Il testo di un file, ma solo se e' UTF-8: altrimenti rifiuta dicendo cosa fare.
+
+    Serve perche' gli estrattori di PDF scrivono **Latin-1 per default**: `pdftotext` senza
+    `-enc UTF-8` produce un file che sembra a posto e che il motore non sa leggere. Meglio
+    un rifiuto con la causa che un testo con gli accenti sostituiti (invariante #15), ed e'
+    un controllo al cancello: nessun file non-UTF-8 entra in `data/materiali/`.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        die(f"Il file non e' UTF-8 ({exc.reason} al byte {exc.start}): e' il formato che produce "
+            f"`pdftotext` senza `-enc UTF-8`. Rigenera l'estratto con "
+            f"`pdftotext -layout -enc UTF-8 <file.pdf> <estratto.md>` e riprova: un testo con gli "
+            f"accenti rotti non e' una fonte citabile.")
+    except OSError as exc:
+        die(f"File non leggibile: {path} ({exc})")
+
+
+def collega_testo(slug: str, materiale: str, origine: Path, pagine: str = "",
+                  mezzo: str = "", campione: str = "", force: bool = False) -> dict:
+    """Copia accanto al materiale la sua trascrizione in testo, e la registra.
+
+    Il motore non estrae il testo dai documenti: non sa leggere un PDF senza
+    dipendenze esterne, e l'estrazione (vista, OCR, copia) resta all'agente. Qui si
+    prende il testo che l'agente ha gia' prodotto per poterlo leggere, si controlla
+    che sia plausibile e lo si rende **cercabile**.
+
+    Tre controlli, tutti volontari e tutti sulla forma:
+
+    - sopra `MAX_TESTO_CARATTERI` o sotto `MIN_TESTO_CARATTERI` rifiuta;
+    - **caratteri per pagina**: se il testo e' dichiarato come un intervallo, il rapporto
+      dice se la copia e' completa. Sotto `CARATTERI_PER_PAGINA[0]` e' la prova che il
+      testo e' troncato o riassunto, e rifiuta; sopra il massimo e' la prova che le
+      pagine dichiarate sono sbagliate, e avvisa.
+    - `mezzo` e `campione` sono **dichiarazioni**, non controlli: dicono come e' stato
+      ottenuto il testo e se qualcuno l'ha confrontato con l'originale. Nessun codice
+      puo' distinguere una trascrizione da una parafrasi: quei due campi servono a
+      rendere visibile quanto ci si sta fidando, invece di doverlo ricordare.
+
+    Il nome della copia deriva dal **file di origine**, non dal materiale: cosi' due
+    estratti dello stesso documento (es. con e senza `-layout`, o due capitoli) convivono
+    e sono cercabili entrambi. Prima derivava dal materiale, e il secondo cancello' il
+    primo in silenzio: il flusso "un capitolo per volta" era impossibile.
+    """
+    folder = materiali_folder(slug)
+    voci = read_materiali(slug)
+    voce = next((v for v in voci if v.get("file") == materiale), None)
+    if not voce:
+        die(f"'{materiale}' non e' fra i materiali di '{slug}': aggancialo con `materiali add`.")
+    if not origine.is_file():
+        die(f"Testo non trovato: {origine}")
+    testo_originale = testo_utf8(origine)
+    caratteri = len(testo_originale)
+    if caratteri < MIN_TESTO_CARATTERI:
+        die(f"Il testo ha {caratteri} caratteri: troppo corto per essere la trascrizione di "
+            f"un documento (minimo {MIN_TESTO_CARATTERI}). Se e' un frammento, usa --nota.")
+    if caratteri > MAX_TESTO_CARATTERI and not force:
+        die(f"Il testo ha {caratteri} caratteri (circa {caratteri // 1600} pagine): oltre il "
+            f"limite di {MAX_TESTO_CARATTERI}. Non trascriverlo in blocco: estrai un pezzo "
+            f"per volta (es. un capitolo), collegalo con `--pagine` e dichiara cosa non hai "
+            f"letto in fonti.md. Per forzare: --force.")
+    dichiarate = pagine_dichiarate(pagine)
+    per_pagina = round(caratteri / dichiarate) if dichiarate else None
+    if per_pagina and per_pagina < CARATTERI_PER_PAGINA[0] and not force:
+        die(f"Dichiari {dichiarate} pagine ma il testo ha {caratteri} caratteri "
+            f"({per_pagina} a pagina): sembra troncato o riassunto, non copiato. Una pagina "
+            f"di testo sta fra {CARATTERI_PER_PAGINA[0]} e {CARATTERI_PER_PAGINA[1]} caratteri. "
+            f"Trascrivi tutto, oppure collegalo a pezzi dichiarando le pagine di ciascuno; per "
+            f"accettarlo comunque: --force (e dillo in fonti.md).")
+    # Nome dall'origine: due estratti diversi dello stesso materiale non si sovrascrivono.
+    destinazione = folder / f"{origine.stem}.estratto.md"
+    sostituito = destinazione.exists()
+    shutil.copy2(origine, destinazione)
+    avvisi = []
+    if sostituito:
+        avvisi.append(f"Aggiornata la trascrizione di `{origine.name}` (stesso file di origine). "
+                      f"Estratti diversi dello stesso materiale convivono se hanno nomi diversi.")
+    if caratteri > MAX_TESTO_CARATTERI:
+        avvisi.append(f"Sopra il limite consigliato ({MAX_TESTO_CARATTERI} caratteri): la ricerca "
+                      f"funziona, ma dichiara in fonti.md che il testo non e' stato letto per intero.")
+    if per_pagina and per_pagina > CARATTERI_PER_PAGINA[1]:
+        avvisi.append(f"{per_pagina} caratteri per pagina sono troppi per un testo stampato: le "
+                      f"pagine dichiarate sembrano sottostimate, e una citazione «pag. {pagine}» "
+                      f"sarebbe fuorviante.")
+    if per_pagina and per_pagina < CARATTERI_PER_PAGINA[0]:
+        avvisi.append(f"{per_pagina} caratteri per pagina: la copia sembra incompleta, dichiaralo "
+                      f"in fonti.md.")
+    if not dichiarate:
+        avvisi.append("Senza `--pagine` non si puo' controllare che la copia sia completa: il "
+                      "rapporto caratteri/pagina e' l'unica prova disponibile che il testo non sia "
+                      "stato troncato.")
+    if mezzo and mezzo not in MATERIALI_MEZZI:
+        die(f"--mezzo accetta: {', '.join(MATERIALI_MEZZI)}.")
+    testo = {"file": destinazione.name, "sorgente": origine.name, "caratteri": caratteri,
+             "righe": len(testo_originale.splitlines()),
+             "pagine": pagine or "", "pagine_n": dichiarate,
+             "caratteri_per_pagina": per_pagina,
+             "mezzo": mezzo or MEZZO_NON_DICHIARATO, "campione": campione or "",
+             "estratto_il": today(), "limite": caratteri > MAX_TESTO_CARATTERI}
+    testi = [t for t in (voce.get("testi") or []) if t.get("file") != destinazione.name] + [testo]
+    voci = [{**v, "testi": testi} if v.get("file") == materiale else v for v in voci]
+    indice = write_materiali(slug, voci)
+    blocchi = len(chunk_di_testo(testo_originale))
+    emit({
+        "ok": True, "azione": "Testo collegato", "argomento": slug, "materiale": materiale,
+        "file": str(destinazione), "caratteri": caratteri, "righe": testo["righe"],
+        "pagine": dichiarate, "caratteri_per_pagina": per_pagina, "mezzo": testo["mezzo"],
+        "campione": testo["campione"], "blocchi_cercabili": blocchi, "indice": str(indice),
+        "sostituito": sostituito, "testi_del_materiale": [t["file"] for t in testi],
+        "avvisi": avvisi,
+        "nota": "`mezzo` e `campione` sono dichiarazioni, non controlli: nessun codice puo' "
+                "distinguere una trascrizione da una parafrasi. Il rapporto caratteri/pagina "
+                "invece e' aritmetica, e becca il troncamento e il riassunto grosso.",
+        "prossimi_passi": f"Cerca dentro i materiali: `python scripts/iv.py materiali search "
+                          f"{slug} \"una frase\"`.",
+    })
+
+
+def chunk_di_testo(text: str) -> list[dict]:
+    """Blocchi ricercabili: i paragrafi, spezzati se superano `CHUNK_CARATTERI`.
+
+    Ogni blocco porta la riga di partenza, cosi' un risultato si puo' citare
+    ("programma, riga 42") e chiunque puo' andare a verificarlo aprendo il file.
+    Un titolo markdown resta attaccato al blocco che apre: e' a cosa serve un titolo,
+    e cosi' un risultato si cita dal capitolo invece che da una riga anonima.
+    Per un paragrafo spezzato la riga e' quella di inizio: e' un'indicazione, non un
+    numero di riga esatto del pezzo.
+    """
+    def solo_titoli(righe: list[str]) -> bool:
+        return all(r.lstrip().startswith("#") for r in righe)
+
+    paragrafi, buffer, inizio = [], [], 1
+    for numero, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            # Un titolo non chiude il blocco: lo apre. Resta in attesa del testo sotto.
+            if buffer and not solo_titoli(buffer):
+                paragrafi.append((inizio, " ".join(buffer)))
+                buffer = []
+            continue
+        if line.lstrip().startswith("#") and buffer and not solo_titoli(buffer):
+            paragrafi.append((inizio, " ".join(buffer)))
+            buffer = []
+        if not buffer:
+            inizio = numero
+        buffer.append(line.rstrip())
+    if buffer:
+        paragrafi.append((inizio, " ".join(buffer)))
+
+    blocchi = []
+    for riga, paragrafo in paragrafi:
+        if len(paragrafo) <= CHUNK_CARATTERI:
+            blocchi.append({"riga": riga, "testo": paragrafo})
+            continue
+        corrente = ""
+        for frase in re.split(r"(?<=[.!?…])\s+", paragrafo):
+            if corrente and len(corrente) + len(frase) > CHUNK_CARATTERI:
+                blocchi.append({"riga": riga, "testo": corrente.strip()})
+                corrente = frase
+            else:
+                corrente = f"{corrente} {frase}".strip()
+        if corrente.strip():
+            blocchi.append({"riga": riga, "testo": corrente.strip()})
+    return blocchi
+
+
+def punteggio_query(termini: set[str], blocco: set[str]) -> float:
+    """Quanta parte della domanda compare nel blocco (0..1).
+
+    Lessicale e spiegabile: parole e steli. Non e' un embedding e non prova a
+    indovinare i sinonimi — un risultato vuoto significa "non c'e' quella parola",
+    non "non c'e' quel concetto", e chi legge la risposta deve saperlo.
+    """
+    if not termini or not blocco:
+        return 0.0
+    return len(termini & blocco) / len(termini)
+
+
+def cerca_nei_materiali(slug: str, query: str, massimo: int = RISULTATI_MASSIMI) -> dict:
+    """Cerca la domanda nei testi trascritti dei materiali di un argomento.
+
+    Restituisce anche cio' che *non* e' stato cercabile: un materiale senza testo
+    non e' un'assenza di contenuto, ed e' la differenza che evita all'agente di
+    concludere "nel tuo materiale non c'e'".
+    """
+    folder = materiali_folder(slug)
+    termini = stems(tokens(query))
+    risultati, senza_testo = [], []
+    blocchi_cercati = 0
+    for voce in read_materiali(slug):
+        testi = voce.get("testi") or []
+        if not testi:
+            senza_testo.append(voce["file"])
+        for testo in testi:
+            for blocco in chunk_di_testo(read_text(folder / str(testo["file"]))):
+                blocchi_cercati += 1
+                punteggio = punteggio_query(termini, stems(tokens(blocco["testo"])))
+                if punteggio <= 0:
+                    continue
+                risultati.append({
+                    "materiale": voce["file"], "pagine": testo.get("pagine") or None,
+                    "file_testo": testo["file"], "riga": blocco["riga"],
+                    "punteggio": round(punteggio, 3),
+                    # Quanto ci si sta fidando: dichiarato da chi ha trascritto, non verificato qui.
+                    "mezzo": testo.get("mezzo") or MEZZO_NON_DICHIARATO,
+                    "campione": testo.get("campione") or "",
+                    "estratto": blocco["testo"][:ESTRATTO_CARATTERI],
+                })
+    risultati.sort(key=lambda r: (-r["punteggio"], r["materiale"], r["riga"]))
+    return {
+        "ok": True, "azione": "Ricerca nei materiali", "argomento": slug, "query": query,
+        "metodo": "lessicale (parole e steli: non trova sinonimi ne' riformulazioni)",
+        "risultati": risultati[:massimo], "trovati": len(risultati),
+        "blocchi_cercati": blocchi_cercati, "materiali_senza_testo": senza_testo,
+        "nota": "Si cerca solo nei testi trascritti (`.estratto.md`): un materiale senza testo "
+                "non e' un materiale vuoto, e il silenzio della ricerca non e' una prova. "
+                "`mezzo` e `campione` sono dichiarati da chi ha trascritto: una trascrizione "
+                "«non verificata» e' una fonte da controllare prima di citarla.",
+    }
+
+
+def cmd_materiali(args) -> None:
+    """Materiali dell'utente: si aggiungono copiandoli, si elencano rigenerando l'indice."""
+    reg = sync_from_disk(load_registry())
+
+    if args.action == "list":
+        if args.slug:
+            entry = find_entry(reg, args.slug)
+            if not entry:
+                die(f"Argomento '{args.slug}' non nel registro.")
+            slugs = [entry["slug"]]
+        else:
+            slugs = sorted(p.name for p in MATERIALI_DIR.iterdir() if p.is_dir()) \
+                if MATERIALI_DIR.is_dir() else []
+        elenco = []
+        for slug in slugs:
+            voci = read_materiali(slug)
+            write_materiali(slug, voci)   # l'indice e' derivato: si rigenera leggendo
+            if voci or args.slug:
+                elenco.append({"argomento": slug, "materiali": voci})
+        payload = {
+            "ok": True, "azione": "Materiali dell'utente", "argomenti": elenco,
+            "totale": sum(len(e["materiali"]) for e in elenco),
+            "nota": "Sono la fonte da privilegiare: leggili prima di generare o rigenerare i contenuti.",
+        }
+        payload["con_testo"] = sum(1 for e in elenco for m in e["materiali"] if m.get("testi"))
+        if args.json:
+            emit(payload)
+        lines = ["# Materiali forniti dall'utente", ""]
+        for voce in elenco:
+            lines.append(f"## {voce['argomento']}")
+            for m in voce["materiali"]:
+                testi = m.get("testi") or []
+                if not testi:
+                    stato = "senza testo: visibile, non cercabile"
+                else:
+                    mezzo = ", ".join(sorted({t.get("mezzo") or MEZZO_NON_DICHIARATO for t in testi}))
+                    campione = ("verificata a campione" if any(t.get("campione") for t in testi)
+                                else "NON verificata a campione")
+                    quanti = f"{len(testi)} testi, " if len(testi) > 1 else ""
+                    stato = f"testo sì, cercabile — {quanti}mezzo: {mezzo}, {campione}"
+                lines.append(f"- `{m['file']}` ({m.get('tipo') or 'altro'}) — "
+                             f"{m.get('titolo') or ''} [{stato}]")
+            if not voce["materiali"]:
+                lines.append("- (nessun materiale)")
+            lines.append("")
+        emit(payload, as_text="\n".join(lines))
+
+    entry = find_entry(reg, args.slug)
+    if not entry:
+        die(f"Argomento '{args.slug}' non nel registro: i materiali si agganciano a un argomento esistente.")
+    slug = entry["slug"]
+
+    if args.action == "testo":
+        collega_testo(slug, args.material, Path(args.file), args.pagine or "",
+                      args.mezzo or "", args.campione or "", args.force)
+        return
+
+    if args.action == "search":
+        payload = cerca_nei_materiali(slug, args.query, args.max or RISULTATI_MASSIMI)
+        if args.json:
+            emit(payload)
+        lines = [f"# Ricerca nei materiali: {slug}", "", f"Query: «{args.query}»",
+                 f"Metodo: {payload['metodo']}", "",
+                 f"{payload['trovati']} risultati su {payload['blocchi_cercati']} blocchi.", ""]
+        for r in payload["risultati"]:
+            dove = f"{r['materiale']}" + (f", pag. {r['pagine']}" if r["pagine"] else "")
+            fiducia = f"trascrizione {r['mezzo']}" + ("" if r["campione"] else ", non verificata")
+            lines += [f"- **{dove}**, riga {r['riga']} (punteggio {r['punteggio']}; {fiducia})",
+                      f"  > {r['estratto']}"]
+        if not payload["risultati"]:
+            lines.append("Nessun blocco contiene le parole della ricerca: lessicale, non semantica.")
+        if payload["materiali_senza_testo"]:
+            lines += ["", "Non cercabili (senza testo trascritto): "
+                          + ", ".join(f"`{f}`" for f in payload["materiali_senza_testo"])]
+        emit(payload, as_text="\n".join(lines))
+
+    origine = Path(args.file)
+    if not origine.is_file():
+        die(f"File non trovato: {origine}")
+    folder = materiali_folder(slug)
+    folder.mkdir(parents=True, exist_ok=True)
+    destinazione = folder / origine.name
+    if destinazione.exists() and not args.force:
+        die(f"'{origine.name}' e' gia' fra i materiali di '{slug}': usa --force per sostituirlo.")
+    shutil.copy2(origine, destinazione)
+    voce = {"file": destinazione.name, "titolo": args.titolo or origine.stem,
+            "tipo": args.tipo or "altro", "nota": args.nota or "",
+            "aggiunto": today(), "byte": destinazione.stat().st_size, "testi": []}
+    voci = [v for v in read_materiali(slug) if v.get("file") != destinazione.name] + [voce]
+    indice = write_materiali(slug, voci)
+    emit({
+        "ok": True, "azione": "Materiale aggiunto", "argomento": slug,
+        "file": str(destinazione), "voce": voce, "totale": len(voci), "indice": str(indice),
+        "prossimi_passi": "Leggilo e allinea i contenuti a quello: e' la fonte da privilegiare, "
+                          "e va citato in fonti.md come materiale fornito dall'utente. Se lo hai "
+                          "letto, collega il testo trascritto con `materiali testo` per renderlo "
+                          "cercabile.",
+    })
 
 
 # ---------------------------------------------------------------- cli
@@ -1957,6 +3146,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--minutes", type=int, default=0)
     p.add_argument("--summary", default="")
     p.add_argument("--module", default="")
+    p.add_argument("--lesson", default="", help="File della lezione preparata per la classe (modalita' docenza)")
     p.add_argument("--mode", default=None, choices=list(MODES))
     p.add_argument("--questions", default="")
     p.add_argument("--next", dest="next", default="")
@@ -1999,6 +3189,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file")
     p.add_argument("--text")
     p.add_argument("--level", type=int, choices=[1, 2, 3, 4])
+    p.add_argument("--registro", choices=list(REGISTRI),
+                   help="A chi stai parlando: stringe gli obiettivi del livello, non li allenta")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_style)
 
@@ -2022,6 +3214,75 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--yes", action="store_true")
     pd.add_argument("--json", action="store_true")
     pd.set_defaults(func=cmd_learner)
+    pp = actions.add_parser(
+        "persona", help="Dichiara o legge la persona del profilo: banda d'eta', tempi, scadenza"
+    )
+    pp.add_argument("--learner", default="default")
+    pp.add_argument("--banda-eta", choices=list(BANDE_ETA))
+    pp.add_argument("--registro", choices=list(REGISTRI),
+                    help="Come parlare a questa persona (stringe gli obiettivi del livello)")
+    pp.add_argument("--configurato-da", help="Chi ha impostato il profilo (per un minore: il genitore)")
+    pp.add_argument("--budget-minuti", type=int, help="Tempo disponibile a settimana")
+    pp.add_argument("--scadenza", help="Data della prova, formato YYYY-MM-DD")
+    pp.add_argument("--obiettivo", help="Obiettivo dichiarato (es. 27/30)")
+    pp.add_argument("--scadenza-argomento", help="Slug dell'argomento della prova")
+    pp.add_argument("--senza-scadenza", action="store_true", help="Dimentica la prova (es. esame passato)")
+    pp.add_argument("--reset", action="store_true", help="Dimentica tutta la persona dichiarata")
+    pp.add_argument("--json", action="store_true")
+    pp.set_defaults(func=cmd_learner)
+
+    p = sub.add_parser("strumenti", help="Cosa c'e' su questa macchina per estrarre testo da un PDF")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_strumenti)
+
+    p = sub.add_parser("materiali", help="Materiali forniti dall'utente: la fonte da privilegiare (add/list/testo/search)")
+    azioni = p.add_subparsers(dest="action", required=True)
+    pa = azioni.add_parser("add", help="Aggiunge un materiale a un argomento (lo copia nei dati)")
+    pa.add_argument("slug")
+    pa.add_argument("--file", required=True, help="File da aggiungere (appunti, PDF, prova passata)")
+    pa.add_argument("--tipo", choices=list(MATERIALI_TIPI))
+    pa.add_argument("--titolo")
+    pa.add_argument("--nota")
+    pa.add_argument("--force", action="store_true")
+    pa.add_argument("--json", action="store_true")
+    pa.set_defaults(func=cmd_materiali)
+    pl = azioni.add_parser("list", help="Elenca i materiali e rigenera l'indice")
+    pl.add_argument("slug", nargs="?")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_materiali)
+    pt = azioni.add_parser("testo", help="Collega la trascrizione in testo di un materiale (lo rende cercabile)")
+    pt.add_argument("slug")
+    pt.add_argument("--material", required=True, help="Nome del materiale (es. 'programma-2026.pdf')")
+    pt.add_argument("--file", required=True, help="File di testo (.md/.txt) con la trascrizione")
+    pt.add_argument("--pagine", help="Da quali pagine viene (es. '1-40'): senza, non si controlla che la copia sia completa")
+    pt.add_argument("--mezzo", choices=list(MATERIALI_MEZZI),
+                    help="Come hai ottenuto il testo: copiato (testo), letto a vista (vista), OCR")
+    pt.add_argument("--campione", help="Esito del controllo a campione (es. '3 citazioni confrontate con l'originale')")
+    pt.add_argument("--force", action="store_true",
+                    help="Accetta un testo oltre il limite, o una copia troppo magra per le pagine dichiarate")
+    pt.add_argument("--json", action="store_true")
+    pt.set_defaults(func=cmd_materiali)
+    ps = azioni.add_parser("search", help="Cerca dentro i testi trascritti dei materiali")
+    ps.add_argument("slug")
+    ps.add_argument("query")
+    ps.add_argument("--max", type=int, default=RISULTATI_MASSIMI, help="Quanti risultati restituire")
+    ps.add_argument("--json", action="store_true")
+    ps.set_defaults(func=cmd_materiali)
+
+    p = sub.add_parser("lezione", help="Prepara o verifica la lezione per una classe (materiale del docente)")
+    p.add_argument("slug")
+    p.add_argument("--classe", help="A chi insegni (es. '3B')")
+    # NON chiamarlo --data: e' un'opzione globale (cartella dati) e un sottocomando che
+    # la ridefinisce la azzera, perche' argparse sovrascrive con il default locale.
+    p.add_argument("--giorno", help="Giorno della lezione (YYYY-MM-DD, default: oggi)")
+    p.add_argument("--minuti", type=int, default=60)
+    p.add_argument("--level", type=int, choices=[1, 2, 3, 4])
+    p.add_argument("--registro", choices=list(REGISTRI), default="standard")
+    p.add_argument("--check", action="store_true", help="Verifica la lezione piu' recente")
+    p.add_argument("--file", help="Lezione specifica da verificare (con --check)")
+    p.add_argument("--force", action="store_true", help="Riscrive una lezione che esiste gia'")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_lezione)
 
     return parser
 
@@ -2041,12 +3302,14 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def set_data_dir(path: Path) -> None:
-    global DATA, REGISTRY, TOPICS_DIR, PROGRESS_DIR, MERGED_DIR
+    global DATA, REGISTRY, TOPICS_DIR, PROGRESS_DIR, MERGED_DIR, LEZIONI_DIR, MATERIALI_DIR
     DATA = Path(path)
     REGISTRY = DATA / "registry.json"
     TOPICS_DIR = DATA / "topics"
     PROGRESS_DIR = DATA / "progress"
     MERGED_DIR = DATA / "_merged"
+    LEZIONI_DIR = DATA / "lezioni"
+    MATERIALI_DIR = DATA / "materiali"
     REGISTRY.parent.mkdir(parents=True, exist_ok=True)
     if not REGISTRY.exists():
         save_registry(empty_registry())

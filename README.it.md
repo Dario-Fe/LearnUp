@@ -79,7 +79,36 @@ Questa separazione è il cuore del progetto: la conoscenza è rigenerabile, i tu
 - **Rigore dichiarato**: ogni affermazione è etichettata *consolidato / semplificato / dibattuto /
   inferenza / da verificare*, e ogni sotto-skill ha una sezione **Da verificare**. Mai fonti inventate.
 - **Semplicità verificabile**: ogni livello ha obiettivi numerici di leggibilità (indice Gulpease, parole
-  per frase) controllati da `iv.py style` e dal validatore — così "spiega semplice" non dipende dal modello.
+  per frase) controllati da `iv.py style` e dal validatore — così "spiega semplice" non dipende dal modello. Il
+  **registro** (a chi si parla: `standard`, `scolastico`, `bambino`) aggiunge vincoli a quelli del livello e
+  non li allenta mai: è dichiarato nella persona del profilo e misurato con `style --registro` prima di
+  consegnare un modulo.
+- **Piano dalla scadenza**: dichiarata la data della prova e il tempo a disposizione, `status` stima se il
+  materiale che resta ci sta, e `due` anticipa i ripassi che cadrebbero dopo la prova.
+- **I tuoi materiali sono la fonte**: `materiali add` copia appunti, programmi e prove passate in
+  `data/materiali/` (restano tuoi, non vengono versionati) e i contenuti generati si allineano a quelli.
+  Collega la trascrizione in testo (`materiali testo`) e il motore ci cerca dentro **in locale**, senza
+  dipendenze: `materiali search` risponde con file, pagina e riga. È una ricerca *lessicale* — non trova
+  sinonimi — e funziona solo su ciò che è stato trascritto: il comando lo dichiara invece di far credere
+  di aver guardato tutto.
+  Prima di trascrivere, `strumenti` dice cosa sa fare **questa** macchina: se trova `pdftotext` (o `pypdf`,
+  o `pymupdf`) il testo si **copia** dal PDF invece di essere letto, ed è la differenza fra una copia e una
+  lettura. Sono attrezzi opzionali: se non ci sono, si legge a vista e il controllo a campione diventa
+  obbligatorio. (`pdftotext` va invocato con `-enc UTF-8`: senza quel flag scrive Latin-1 e il motore
+  rifiuta il file, perché gli accenti rotti non sono una fonte citabile.) Il flag `-layout` invece **non è
+  sempre giusto**: conserva elenchi e tabelle ma fa entrare i riquadri centrati in mezzo alle frasi, e
+  l'ordine di lettura conta quanto le parole. La scelta si fa guardando i primi righi dell'estratto, e due
+  estratti diversi dello stesso documento convivono: la ricerca li interroga tutti e dice da quale viene.
+  Il motore non può leggere il PDF né giudicare la fedeltà di una trascrizione, quindi fa **l'unica
+  verifica possibile senza fidarsi di nessuno**: il rapporto caratteri/pagina. Dichiari `--pagine "1-50"`
+  e il testo ha 8.000 caratteri? Ti rifiuta la copia invece di accettarla in silenzio. E riporta `--mezzo`
+  (come l'hai ottenuto) e `--campione` (se l'hai controllata a campione) accanto a ogni risultato, così
+  sai quanto fidarti invece di dovertelo ricordare.
+  Il resto lo tiene la procedura: prima di citare una trascrizione come fonte, l'agente deve confrontare
+  **almeno tre citazioni prese a caso** con l'originale e registrarne l'esito. Se una non combacia, quella
+  trascrizione non è una fonte — e viene detto, invece di essere citata come se lo fosse.
+- **Lezioni per una classe** (docenza): `lezione <slug> --classe "3B"` crea l'artefatto della lezione, e
+  `lezione <slug> --check` non lascia portare in aula uno scheletro non compilato.
 
 ---
 
@@ -221,6 +250,7 @@ python scripts/iv.py register <slug> [--self-check "…"] [--force]
 python scripts/iv.py list [--json]               # argomenti salvati
 python scripts/iv.py show <slug>                 # file della sotto-skill + progressi
 python scripts/iv.py style <slug> | --text "…" [--level 2]   # leggibilità (Gulpease) vs obiettivo del livello
+python scripts/iv.py style --text "…" --registro bambino        # ...stringendo l'obiettivo: a chi stai parlando
 
 # manutenzione del registro
 python scripts/iv.py alias <slug> --add "nome alternativo" | --list
@@ -236,6 +266,20 @@ python scripts/iv.py learner list | --json       # profili allievo con progressi
 python scripts/iv.py learner merge <da> --into <a>   # unisce due profili senza perdere storia
 python scripts/iv.py learner rename <nome> --to "<nome corretto>"   # corregge un nome (lascia un alias)
 python scripts/iv.py learner delete <nome> [--yes]   # senza --yes mostra solo l'anteprima
+python scripts/iv.py learner persona --learner <nome>   # persona dichiarata: banda d'eta', tempi, scadenza
+python scripts/iv.py learner persona --banda-eta ragazzo --configurato-da "il padre" \
+      --budget-minuti 180 --scadenza 2026-12-15 --obiettivo "27/30"
+
+# materiali dell'utente e lezioni (docenza)
+python scripts/iv.py strumenti   # cosa c'e' su questa macchina per estrarre il testo da un PDF
+python scripts/iv.py materiali add <slug> --file "<appunti.pdf>" --tipo appunti   # copia, non collega
+python scripts/iv.py materiali list [<slug>] [--json]   # elenco e indice rigenerato
+python scripts/iv.py materiali testo <slug> --material "<appunti.pdf>" --file "<trascrizione.md>" \
+      --pagine "1-40" --mezzo testo|vista|ocr --campione "3 citazioni confrontate con l'originale"
+python scripts/iv.py materiali search <slug> "<frase del materiale>" [--json]   # file, pagina, riga
+python scripts/iv.py lezione <slug> --classe "3B" [--registro scolastico]   # crea la lezione
+python scripts/iv.py lezione <slug> --check   # sezioni, sostanza minima, leggibilità
+python scripts/iv.py learner persona --reset   # dimentica la persona: i progressi non si toccano
 ```
 
 Opzioni globali: `--data <cartella>` (o variabile d'ambiente `IV_DATA`) per tenere i dati fuori dalla skill,
@@ -259,11 +303,14 @@ Opzioni globali: `--data <cartella>` (o variabile d'ambiente `IV_DATA`) per tene
 │   └── schema-sottoskill.md
 ├── scripts/iv.py             # motore: registro, ricerca, validazione, progressi, ripassi
 ├── assets/templates/topic/   # scheletro di una nuova sotto-skill
-├── tests/test_iv.py          # 54 test del motore
+├── assets/templates/lezione/ # scheletro della lezione per una classe (docenza)
+├── tests/test_iv.py          # 175 test del motore
 └── data/
     ├── registry.json         # indice (rigenerabile, non versionato)
     ├── topics/<slug>/        # LE SOTTO-SKILL SALVATE
     │   └── metodo-feynman/   # esempio di riferimento completo e validato
+    ├── materiali/<slug>/     # i tuoi materiali e le loro trascrizioni (non versionati)
+    ├── lezioni/<slug>/       # lezioni preparate per una classe (non versionate)
     └── progress/<learner>/   # stato dell'allievo (non versionato)
 ```
 
@@ -325,7 +372,7 @@ Approccio in due tempi, per non introdurre un backend finché non serve:
 
 1. **Dashboard statica** (deriva da v0.2): pagine HTML generate dai dati, zero dipendenze, funziona offline
    e su GitHub Pages. Viste: diario, argomenti, concetti in scadenza, salute delle sotto-skill.
-2. **App locale** (FastAPI o Flask + HTMX, sempre senza build step JS): 
+2. **App locale** (FastAPI o Flask + HTMX, sempre senza build step JS):
    - *Sessione guidata*: rende i moduli uno alla volta, con verifica e voti;
    - *Ripasso*: flashcard dai concetti tracciati, con i pulsanti di voto che aggiornano SM-2;
    - *Editor di argomento*: crea e modifica una sotto-skill con validazione in tempo reale;
@@ -336,8 +383,9 @@ Approccio in due tempi, per non introdurre un backend finché non serve:
 
 - **Ricerca semantica** accanto a quella lessicale (embedding locali), per riconoscere i doppioni
   anche quando le parole sono diverse.
-- **Import del programma d'esame**: da un PDF o da un elenco di capitoli, generazione assistita del
-  piano dei moduli con revisione umana prima della validazione.
+- **Import del programma d'esame** (*parziale*): il programma si aggancia e si interroga già con
+  `materiali`, ma il piano dei moduli si scrive ancora a mano. Manca: da un elenco di capitoli,
+  generazione assistita del piano con revisione umana prima della validazione.
 - **Sotto-skill figlie automatiche**: dai prerequisiti rilevati nel percorso, proposta di creazione a cascata.
 - **Analisi delle lacune**: se lo stesso errore ricorre in argomenti diversi, proporre una sotto-skill trasversale.
 
@@ -346,7 +394,14 @@ Approccio in due tempi, per non introdurre un backend finché non serve:
 - **Server MCP**: esporre `iv.py` come strumenti MCP, così qualunque client compatibile può usare
   il sistema senza conoscere l'interfaccia a riga di comando.
 - **Promemoria**: notifiche di ripasso via email o calendario (`.ics` esportabile già in v0.2).
-- **RAG sui tuoi materiali**: indicizzare dispense e PDF personali come fonte preferita della sotto-skill.
+- **RAG sui tuoi materiali** (*avviato*): `materiali testo` + `materiali search` cercano già dentro le
+  trascrizioni, in locale e senza dipendenze; il controllo caratteri/pagina becca la copia troncata o
+  riassunta; le estrazioni dello stesso documento (capitolo per capitolo, oppure con e senza `-layout`)
+  **convivono** e si cercano tutte, così il flusso "un capitolo per volta" è possibile. Mancano: un flusso
+  **guidato** per i documenti grandi (oggi è una sequenza che l'agente esegue a mano), una rilevanza che
+  vada oltre la sovrapposizione lessicale, il riconoscimento di una parafrasi **della lunghezza giusta**, e
+  un controllo automatico della **leggibilità dell'estratto** (un riquadro centrato finito in mezzo a una
+  frase passa tutti i controlli: lo vede solo chi legge).
 - **GitHub Action**: validazione automatica delle sotto-skill nelle pull request (`iv.py validate --all`),
   utile quando il repository diventa una libreria condivisa di percorsi.
 - **Registro condiviso di argomenti**: importare/esportare singole sotto-skill da altri utenti,
@@ -371,9 +426,10 @@ references/  scripts/  assets/  tests/
 data/topics/metodo-feynman/     # esempio di riferimento (opzionale)
 ```
 
-Restano fuori (già in `.gitignore`): `data/progress/` (i tuoi progressi), `data/registry.json`
-(rigenerabile: si ricostruisce al primo comando da `data/topics/*/meta.json`), `data/_merged/`,
-`.agents/` (collegamento locale), `__pycache__/`.
+Restano fuori (già in `.gitignore`): `data/progress/` (i tuoi progressi), `data/materiali/` (i materiali
+che hai fornito e le loro trascrizioni: sono tuoi), `data/lezioni/` (lezioni scritte per una classe),
+`data/registry.json` (rigenerabile: si ricostruisce al primo comando da `data/topics/*/meta.json`),
+`data/_merged/`, `.agents/` (collegamento locale), `__pycache__/`.
 
 ```bash
 git init
@@ -396,10 +452,25 @@ titolare del copyright in `LICENSE` con il tuo nome.
 
 ## Limiti da conoscere
 
-- **La validazione garantisce struttura e minimi, non la verità dei contenuti.** La qualità delle
-  spiegazioni dipende dall'agente che le genera: per questo esistono le etichette di affidabilità e la
-  sezione *Da verificare* in ogni sotto-skill.
-- **La ricerca è lessicale**, non semantica: i casi ambigui li decide l'agente, chiedendo conferma a te.
+- **Il "RAG" sui tuoi materiali non è affidabile al 100%, e non lo diventerà.** Non è una cautela
+  generica: sono tre limiti precisi, ognuno verificabile da te.
+  1. **Cerca solo ciò che è stato trascritto.** Un PDF che non contiene testo (una scansione, o una
+     "stampa in PDF" fatta dal browser) non ha niente da estrarre: il motore lo rifiuta e il materiale
+     resta non cercabile, dichiarato come tale. Lì serve un OCR o la lettura a vista.
+  2. **La ricerca è lessicale**: i sinonimi e le riformulazioni non si trovano. Cercare «riduzione di
+     precisione dei pesi» non trova il paragrafo che dice «quantizzazione».
+  3. **La fedeltà della copia non è garantita dal motore**, che non legge i documenti. La controlla
+     l'aritmetica (i caratteri per pagina beccano il troncamento e il riassunto grosso) e il controllo a
+     campione (tre citazioni confrontate con l'originale, prima di citare). La **parafrasi della stessa
+     lunghezza** non è distinguibile da una trascrizione con nessun controllo automatico: quella la vede
+     solo chi legge. E l'ordine delle frasi può essere alterato dall'impaginazione del PDF.
+
+  In pratica: ogni risultato porta **file, pagina e riga**, così vai a verificare invece di fidarti. Un
+  "RAG" affidabile, qui, significa *verificabile* — non *infallibile*.
+- **La validazione garantisce struttura e minimi, non la verità dei contenuti né la scrittura.** La qualità
+  delle spiegazioni dipende dall'agente che le genera: per questo esistono le etichette di affidabilità,
+  la sezione *Da verificare* in ogni sotto-skill e il passo di rilettura obbligatorio (il lint di prosa
+  intercetta gli artefatti meccanici, non i refusi).
 - **La ripetizione spaziata è SM-2 semplificato**, un solo elemento per concetto (niente card multiple).
 - **Le sotto-skill vivono dentro la skill** e non sono skill di primo livello: così non inquinano il routing
   dell'agente con decine di descrizioni concorrenti. Si caricano leggendo il file per percorso.

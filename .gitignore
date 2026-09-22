@@ -3,6 +3,14 @@
 data/progress/
 data/_merged/
 
+# Lezioni preparate dal docente: materiale di lavoro per una classe, non parte
+# della skill (come gli argomenti creati studiando).
+data/lezioni/
+
+# Materiali forniti dall'utente (appunti, programmi, prove passate): possono
+# contenere dati personali o materiale di terzi protetto da copyright.
+data/materiali/
+
 # Indice rigenerabile: viene ricostruito al primo comando (iv.py list / find / reindex)
 # a partire da data/topics/*/meta.json, quindi non serve versionarlo.
 data/registry.json

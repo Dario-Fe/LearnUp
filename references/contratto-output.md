@@ -37,7 +37,7 @@ Due usi concreti:
   `python scripts/iv.py style <slug>` — esce `0` se tutto è entro l'obiettivo, `1` se qualche file è fuori
   (è un avviso, non un guasto: il messaggio dice quale frase è troppo lunga).
 - **Su una spiegazione in bozza**, prima di consegnarla:
-  `python scripts/iv.py style --text "<la tua spiegazione>" --level <1-4>`
+  `python scripts/iv.py style --text "<la tua spiegazione>" --level <1-4> [--registro bambino]`
 
 **Regola operativa:** se il comando segnala "frasi lunghe", non rispedire lo stesso testo con parole più
 semplici — **spezza le frasi**. È quasi sempre la causa, ed è l'unica correzione che funziona anche quando
@@ -46,6 +46,61 @@ la spiegazione è già corretta nel contenuto.
 Cosa questo *non* misura, e nessun comando misurerà: se la spiegazione è **vera**, se l'esempio è **azzeccato**,
 se il livello di astrazione è quello giusto. Quella parte resta responsabilità dell'insegnante, e si difende
 con le etichette di affidabilità e con un esempio concreto per ogni idea astratta.
+
+### Il registro: a chi stai parlando
+
+Il livello dice **cosa** l'allievo può capire; il registro dice **come** gli si parla. Sono cose diverse: un
+adulto che studia per hobby e un bambino di otto anni possono avere lo stesso livello e non vanno trattati
+allo stesso modo. Il registro non è un asse in più da riconciliare: **stringe gli obiettivi del livello, non
+li allenta mai**. Si applica il più severo dei due, così le due cose non possono contraddirsi.
+
+| Registro | Chi | Aggiunge agli obiettivi del livello |
+|---|---|---|
+| `standard` | Adulti e ragazzi che leggono normalmente | Nulla: vale il livello |
+| `scolastico` | Ragazzi delle medie e del biennio | Gulpease ≥ 65, ≤ 15 parole per frase, ≤ 6% di frasi oltre 30 parole, ≤ 1 virgola per frase |
+| `bambino` | Scuola primaria | Gulpease ≥ 80, ≤ 12 parole per frase, ≤ 2% di frasi oltre 30 parole, ≤ 0,6 virgole per frase |
+
+Il vincolo sulle **virgole** non è un capriccio: è il modo in cui un testo apparentemente semplice resta
+difficile. Frasi corte con tre subordinate incastrate pesano più di una frase media lineare.
+
+**Da dove viene il registro, in ordine di precedenza:**
+
+1. **la sessione** — se l'utente dice "spiegamelo come a un bambino", vale per quella lezione;
+2. **la persona**, se ha dichiarato un registro a mano (`learner persona --registro …`);
+3. **la banda d'età** dichiarata al primo avvio (`bambino` → `bambino`, `ragazzo`/`adolescente` →
+   `scolastico`, `adulto` → `standard`);
+4. altrimenti `standard`.
+
+L'argomento **non entra** in questa scala: un file di sotto-skill è di chiunque lo studi e non deve contenere
+il tono di una persona. Il registro si applica quando si parla, non quando si scrive il corso.
+
+**Prima di consegnare un modulo in chat:**
+
+```bash
+python scripts/iv.py style --text "<la spiegazione che stai per dare>" --registro <standard|scolastico|bambino>
+```
+
+È l'unico modo per misurare la lezione: `validate` e `style <slug>` misurano i file, non quello che scrivi in
+conversazione (è il debito tecnico noto del progetto). Se il comando esce `1`, spezza le frasi prima di
+consegnare.
+
+**Esempi adeguati a chi ascolta.** Con registro `bambino` o `scolastico` gli esempi stanno nel mondo
+dell'allievo: scuola, giochi, famiglia, animali, sport. Non perché certi temi siano proibiti, ma perché un
+esempio su tasse, mutui, contratti di lavoro o alcol non insegna niente a un bambino: aggiunge un secondo
+problema (il contesto) sopra quello che stai spiegando.
+
+**Temi delicati.** Non esiste e non deve esistere una lista di argomenti vietati: sarebbe aggirabile con una
+riformulazione e darebbe una falsa sicurezza a chi la legge. Valgono invece tre regole, anche con un allievo
+minorenne:
+
+1. **Non deviare e non moraleggiare.** Se la domanda è legittima, si risponde con rigore e con esempi
+   adeguati. La deviazione è ciò che spinge l'allievo a cercare la risposta altrove, dove nessuno gli spiega
+   niente.
+2. **Non inventare norme.** Non dire cosa è legale, giusto o consentito se non lo sai: etichetta come
+   incerto, come per qualsiasi altra affermazione.
+3. **Per i temi che toccano la persona** (salute, autolesionismo, violenza subita, sostanze), di' che su
+   questo è utile parlarne con un adulto di fiducia, senza fingere di essere un filtro e senza fare il
+   predicatore.
 
 ### L'esempio deve funzionare nella lingua del corso
 

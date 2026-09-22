@@ -16,6 +16,9 @@ Se `da_rigenerare` non è vuoto → la cornice è cambiata in modo **incompatibi
 topic prima di usarli. Se invece `cornice_aggiornabile` non è vuoto → cambiamenti **compatibili** (minor):
 la sotto-skill si usa così com'è, e si arricchisce con le regole nuove alla prossima rigenerazione.
 Se `ripassi_oggi > 0` → proponi 5 minuti di riscaldamento (FASE 2.C).
+Se `piano` non è vuoto → l'allievo ha dichiarato una prova o un budget di tempo: il `prossimo_passo`
+parla di quello, e va detto **subito**, prima dell'argomento (giorni che restano, moduli che mancano, se
+la stima dice che ci sta).
 
 **0.2 Fissa il profilo allievo (una volta per persona).** I progressi vivono in `data/progress/<profilo>/`.
 Prima guarda chi c'è già:
@@ -66,6 +69,37 @@ Due regole che evitano i guai visti sul campo:
   li unisce lasciando un alias. Se `status` dice che i progressi stanno in un altro profilo, **non**
   ripartire da zero: aggiungi quel `--learner`.
 
+**0.2-ter La persona: chi studia, con che tono, con quanto tempo.** Se il profilo non ha una persona
+dichiarata, chiedila nello stesso momento in cui chiedi il nome, con la stessa leggerezza, e registrala:
+
+```bash
+python scripts/iv.py learner persona --learner "<nome>" \
+      --banda-eta <bambino|ragazzo|adolescente|adulto> \
+      --configurato-da "<chi imposta il profilo, se non è chi studia>" \
+      --budget-minuti <minuti a settimana> \
+      --scadenza <YYYY-MM-DD> [--obiettivo "27/30"]
+```
+
+Tre cose da dire e una da non fare:
+
+- **Banda d'età, non data di nascita.** Serve a scegliere il registro, non a profilare nessuno.
+- **Chi configura non è sempre chi studia.** Se un genitore prepara il profilo di un figlio, dichiaralo in
+  `--configurato-da`; il profilo con i progressi resta di chi studia.
+- **Si può saltare.** Senza persona il registro è `standard` e non cambia niente: non insistere.
+- **Non dedurre la banda** da email, cartella utente o hostname (vale come per il nome).
+
+Si cambia quando serve: `learner persona --banda-eta …` sovrascrive, `--reset` dimentica la persona senza
+toccare i progressi.
+
+Rileggi sempre i valori **calcolati**, invece di rifarli a mente:
+
+```bash
+python scripts/iv.py learner persona --learner "<nome>" --json   # registro_effettivo, livello_suggerito
+```
+
+`livello_suggerito` è da dove partire per un argomento **nuovo** (il `--level` di `create`): l'argomento
+resta di tutti, la banda dice solo da dove è ragionevole cominciare.
+
 **0.2-bis Chiedi l'argomento.** Se l'utente non l'ha già detto, chiedi: *cosa vuoi studiare oggi?*
 Se non sa da dove partire, mostra gli argomenti già avviati (`python scripts/iv.py list --learner <profilo>`)
 e proponine la ripresa.
@@ -97,11 +131,105 @@ Non saltare mai questo passaggio: è ciò che rende il sistema rigenerante invec
 
 ## FASE 1 — Generazione di una nuova sotto-skill
 
+**1.0 Chiedi se ha materiali — prima di scrivere.** *"Hai appunti, dispense, il programma del corso o
+prove degli anni scorsi?"* Chiedilo **prima** di generare: se ha il programma, il corso si scrive guardando
+quello, non a memoria. I file si agganciano però **dopo 1.1** (un materiale appartiene a un argomento, e
+`materiali add` rifiuta uno slug che non esiste).
+
 **1.1 Crea lo scheletro.**
 
 ```bash
 python scripts/iv.py create --title "<Titolo leggibile>" --level <1-4> --mode <autodidatta|esame|docenza> --prereq "<prerequisito>"
 ```
+
+**1.1-bis Aggiungi i materiali dell'utente, se ne ha.**
+
+```bash
+python scripts/iv.py materiali add <slug> --file "<file>" --tipo appunti|programma|prova|libro
+python scripts/iv.py materiali list <slug>
+```
+
+Il motore **copia** il file in `data/materiali/<slug>/` e ne tiene l'indice (rigenerato a ogni `list`):
+non è un collegamento, quindi se l'originale sparisce il materiale del corso resta. I materiali non sono
+versionati — sono dell'utente.
+
+Il contenuto che scrivi **si allinea a quel materiale**, e `fonti.md` lo cita come *materiale fornito
+dall'utente*. Se è un PDF lo leggi tu: il motore non ha dipendenze per aprirlo, e non deve averne. Un
+argomento con materiali nella lista (`iv.py list`, colonna *Materiali*) si rigenera guardando quelli.
+
+**1.1-ter Trascrivi in testo ciò che ha letto, se ha senso.** Un materiale senza testo resta visibile a te
+ma invisibile al motore: non lo si può cercare. Prima di trascrivere, **chiedi alla macchina cosa sa fare**:
+
+```bash
+python scripts/iv.py strumenti
+```
+
+Il payload dice se su **questa** macchina esiste un estrattore (`pdftotext`, `pypdf`, `pymupdf`) e quindi
+se il testo si può **copiare** invece di leggerlo. Il motore li rileva e non li esegue mai: l'estrazione
+resta a te. Due conseguenze operative:
+
+- **Se la copia meccanica è possibile, usala, ma scegli il comando guardando l'estratto.** Nessuno dei
+  due va bene sempre, e la differenza si vede solo leggendo:
+  - `pdftotext -layout -enc UTF-8` conserva elenchi e tabelle, ma fa **entrare i riquadri centrati in
+    mezzo alle frasi**: visto sul campo, il titolo centrato di un riquadro finisce dentro un periodo, che
+    diventa «L'iscrizione si completa online e sarà confermata **MODULO A — DATI PERSONALI** al
+    ricevimento del pagamento». Le parole ci sono tutte, l'ordine no, e il periodo dice una cosa che nel
+    documento non esiste;
+  - `pdftotext -enc UTF-8` legge in ordine di flusso: frasi intere, ma elenchi fusi in una riga e
+    citazioni più grosse (una pagina intera invece di un paragrafo).
+
+  **Apri l'estratto e guarda i primi righi**: se vedi un titolo, un numero di pagina o un riquadro in
+  mezzo a una frase, rifai senza `-layout` e tieni la versione che si legge meglio. È una decisione che si
+  prende guardando, non ragionando, e in dieci secondi. Il flag `-enc UTF-8` non è opzionale in nessuno
+  dei due: senza, `pdftotext` scrive Latin-1 e il motore **rifiuta** il file, perché gli accenti rotti
+  renderebbero illeggibile la fonte. Dichiara `--mezzo testo`: è una copia, non una lettura.
+
+  Se servono entrambe le estrazioni (le tabelle da una, l'ordine di lettura dall'altra), collegatele con
+  **nomi diversi**: restano due trascrizioni dello stesso materiale, la ricerca le interroga tutte e il
+  risultato dice da quale viene. Con lo stesso nome, la seconda **sostituisce** la prima: è un
+  aggiornamento legittimo, e il payload lo dichiara (`sostituito: true`).
+- **Se non è possibile**, il testo lo produce la tua lettura del PDF: dichiara `--mezzo vista` (o `ocr`) e
+  il **controllo a campione diventa obbligatorio**, non consigliato.
+
+Poi salva la trascrizione e collegalala:
+
+```bash
+python scripts/iv.py materiali testo <slug> --material "<programma.pdf>" --file "<trascrizione.md>" \
+    --pagine "1-40" --mezzo testo|vista|ocr --campione "<esito del controllo a campione>"
+python scripts/iv.py materiali search <slug> "<una frase del materiale>"
+```
+
+Da lì in poi `materiali search` risponde con **file, pagina e riga**: è così che citi una fonte precisa
+invece di dire «nel tuo PDF». Quattro regole, perché questa è la parte dove si può mentire senza
+accorgersene:
+
+- **Trascrivi, non riassumere.** Il testo collegato è una fonte citabile: una parafrasi spacciata per
+  trascrizione è una fonte inventata (invariante #15). Se hai riassunto, dillo in `fonti.md`.
+- **Non trascrivere in blocco ciò che non potevi leggere.** Il motore rifiuta sopra ~400.000 caratteri
+  (circa 250 pagine): quel rifiuto è la regola in forma eseguibile. Per un manuale si estrae **un capitolo
+  per volta**, si collega con `--pagine` e si dichiara in `fonti.md` **cosa non è stato letto**. Ogni
+  capitolo è una trascrizione a sé — il nome lo dà il file di origine, quindi da `capitolo-1.txt` e
+  `capitolo-2.txt` nascono due copie che convivono — ma solo se non riusi lo stesso nome.
+- **Dichiara sempre `--pagine`.** È l'unica prova disponibile che la copia sia completa: il motore
+  calcola i caratteri per pagina e **rifiuta** se sono sotto 250 (testo troncato o riassunto: 500 caratteri
+  dichiarati come 12 pagine sono un indice, non una trascrizione). Sopra 6.000 avvisa che le pagine
+  dichiarate sono sbagliate. Senza `--pagine` il controllo non può essere fatto, e il motore lo dice nel
+  payload: il silenzio su questo punto è la cosa da non accettare.
+- **Dichiara come hai ottenuto il testo (`--mezzo`) e verificalo a campione (`--campione`).** `testo` (copiato
+  da un PDF con testo), `vista` (letto a schermo), `ocr`. Nessun codice può distinguere una trascrizione da
+  una parafrasi: quei due campi rendono visibile **quanto ci si sta fidando** invece di doverlo ricordare,
+  e `list`, `INDICE.md` e ogni risultato di ricerca li riportano. Un risultato marcato *non verificata* è
+  una fonte da controllare **prima** di citarla all'allievo.
+
+**Controllo a campione, prima di trattare la trascrizione come fonte** (se il documento non è una paginetta
+di testo selezionabile): apri l'originale e confronta **almeno tre citazioni** prese a caso — non le prime
+righe, che sono le più facili — con la pagina corrispondente. Se anche una sola non combacia, la
+trascrizione non è una fonte: rifalla, oppure dillo in `fonti.md` e nella *sezione Da verificare*. Poi
+registra l'esito in `--campione`. Il costo è di due minuti; il costo di una citazione sbagliata è una
+bocciatura su una domanda che non esiste (vedi l'esempio della *banca* in `contratto-output.md`).
+- **La ricerca è lessicale.** Non trova sinonimi né riformulazioni. Un risultato vuoto significa «non c'è
+  quella parola», *non* «non c'è quel concetto»: `materiali_senza_testo` e le pagine non lette vanno
+  guardate prima di concludere che il materiale non parla di qualcosa.
 
 **1.2 Gestisci i prerequisiti.** Per ogni prerequisito dichiarato, lancia `iv.py find "<prerequisito>"`.
 Se manca e l'allievo non lo padroneggia, creane la sotto-skill (cascata massima: 2 livelli) e dillo all'utente.
@@ -152,6 +280,30 @@ python scripts/iv.py register <slug> --self-check "<una riga: come hai verificat
 *"Ho preparato il percorso su X con 4 moduli, partiamo dalle basi?"*
 
 ## FASE 2 — Insegnamento
+
+**2.0 Prima di parlare: scegli il registro.** Il tono non si improvvisa sessione per sessione. Leggi
+`registro_effettivo` dalla persona (precedenza: sessione > persona > banda d'età > `standard`) e, per i moduli
+in cui spieghi, misura la bozza prima di consegnarla:
+
+```bash
+python scripts/iv.py style --text "<la spiegazione>" --registro <standard|scolastico|bambino>
+```
+
+Esce `1` se è fuori obiettivo: allora **spezza le frasi**, non rispedire lo stesso testo. È l'unico modo per
+misurare la lezione in chat, cioè la superficie che `validate` e `style <slug>` non vedono. Regole complete
+(esempi adeguati all'età, temi delicati) in `contratto-output.md`.
+
+**In modalità docenza** serve anche l'artefatto da portare in aula, prima di spiegare:
+
+```bash
+python scripts/iv.py lezione <slug> --classe "3B" --registro scolastico
+# compili il file al posto dei blocchi ISTRUZIONI, poi:
+python scripts/iv.py lezione <slug> --check
+```
+
+`--check` esce `1` finché restano sezioni vuote, placeholder, `ISTRUZIONI:` o meno di tre domande
+probabili: una lezione scheletro non si porta in classe. A fine sessione,
+`log --topic <slug> --minutes N --lesson "<file>"` lega la lezione consegnata al diario.
 
 **2.A Un modulo per volta**, con questa sequenza:
 

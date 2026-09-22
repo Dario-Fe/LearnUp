@@ -37,6 +37,10 @@ Le sotto-skill **non** sono skill separate da caricare col tool delle skill: son
 python scripts/iv.py status
 ```
 
+Se `piano` non è vuoto, l'allievo ha dichiarato una prova o un budget di tempo: il `prossimo_passo` parla
+di quello, e va detto **prima** dell'argomento (quanti giorni restano, quanti moduli mancano, se la stima
+dice che ci sta).
+
 **2. Fissa il profilo allievo e chiedi quale argomento vuole studiare.** I progressi vivono in
 `data/progress/<profilo>/`: scegli **un** identificativo per persona e passalo sempre con `--learner`
 (`log`, `due`, `stats`, `list`, `show`, `status`).
@@ -44,6 +48,10 @@ python scripts/iv.py status
 - **Al primo avvio** (nessun profilo: `python scripts/iv.py learner list`) chiedi il nome una volta sola,
   dentro la stessa domanda sull'argomento, e di' che **resta in locale** (`data/progress/` non è versionato
   e non viene pubblicato). Se l'utente preferisce restare anonimo, ometti `--learner` e vale `default`.
+- **Allo stesso primo avvio**, chiedi (e puoi saltare) la **persona**: banda d'età, chi configura il profilo
+  se non è chi studia, tempo disponibile, scadenza. Registrala con
+  `python scripts/iv.py learner persona --learner <nome> …` e rileggila quando serve: `registro_effettivo`
+  e `livello_suggerito` sono già calcolati. Non dedurla mai: se non la dichiara, vale `standard`.
 - **Se un profilo esiste già**, riusalo senza chiedere niente. Non inventare né dedurre mai un nome.
 - Se `status` segnala progressi in un altro profilo, riprendi quello invece di ripartire da zero.
 
@@ -123,6 +131,12 @@ Segui `references/costituzione.md` e `references/contratto-output.md`. La sequen
   significa "arricchiscila quando la rigeneri", non "fermati".
 - **Mai chiudere senza `iv.py log`**: senza registrazione non c'è ripetizione spaziata.
 - **Mai duplicare**: due argomenti uguali si risolvono con `alias` o `merge`, non con una nuova sotto-skill.
+- **Mai ignorare i materiali dell'utente**: se ha appunti, programma o prove passate, quelli sono la fonte
+  da privilegiare sui contenuti generati, e lo si dichiara in `fonti.md`.
+- **Mai vendere la ricerca come se avesse guardato tutto**: `materiali search` è **lessicale** e copre solo
+  i testi trascritti. Zero risultati significa «non l'ho trovato con queste parole», mai «non c'è».
+  Prima di concludere guarda `materiali_senza_testo` e le pagine dichiarate; se il materiale non è
+  trascritto, dillo. Un risultato è una **citazione da verificare** (file, pagina, riga), non una prova.
 - **Mai toccare `data/progress/`** rigenerando una sotto-skill: i progressi dell'allievo non si riscrivono.
 - **Mai piegare i fatti** a quello che l'allievo spera di sentire, e mai dichiarare che ha capito senza prova.
 
@@ -133,11 +147,32 @@ python scripts/iv.py status              # debiti, bozze, da rigenerare, ripassi
 python scripts/iv.py list                # argomenti salvati (segnala i progressi di altri profili)
 python scripts/iv.py validate --all      # salute delle sotto-skill + lint di prosa + leggibilità
 python scripts/iv.py style <slug>        # leggibilità per file, contro l'obiettivo del livello
+python scripts/iv.py style --text "<bozza>" --registro bambino   # prima di consegnare un modulo in chat
 python scripts/iv.py learner list        # profili allievo e loro alias
 python scripts/iv.py learner merge <da> --into <a>   # unisce due profili senza perdere storia
 python scripts/iv.py learner rename <nome> --to "<nome corretto>"   # il vecchio nome resta come alias
 python scripts/iv.py learner delete <nome> [--yes]   # senza --yes e' solo un'anteprima
-python scripts/iv.py due                 # cosa ripassare adesso
+python scripts/iv.py learner persona --learner <nome>   # persona dichiarata (--json per leggerla)
+python scripts/iv.py learner persona --banda-eta ragazzo --budget-minuti 180 --scadenza 2026-12-15
+python scripts/iv.py learner persona --reset   # dimentica la persona: i progressi restano
+python scripts/iv.py learner persona --registro scolastico   # come parlare (stringe gli obiettivi del livello)
+python scripts/iv.py due                 # cosa ripassare adesso (anticipa ciò che cade dopo la prova)
+python scripts/iv.py strumenti           # cosa c'e' su QUESTA macchina per estrarre testo da un PDF
+python scripts/iv.py materiali add <slug> --file "<appunti.pdf>" --tipo appunti
+python scripts/iv.py materiali list      # materiali dell'utente: la fonte da privilegiare
+python scripts/iv.py materiali testo <slug> --material "<appunti.pdf>" --file "<trascrizione.md>" \
+    --pagine "1-40" --mezzo testo --campione "3 citazioni confrontate con l'originale"
+python scripts/iv.py materiali search <slug> "<frase>"   # risponde con file, pagina e riga
+# Trascrivi, non riassumere; dichiara sempre --pagine (sotto 250 caratteri/pagina rifiuta:
+# la copia e' troncata o riassunta). Sopra ~250 pagine si estrae un capitolo per volta.
+# Con pdftotext serve -enc UTF-8: senza, scrive Latin-1 e il motore rifiuta il file.
+# Se la macchina non ha estrattori, il testo lo produce la tua lettura: --mezzo vista
+# e controllo a campione obbligatorio.
+# -layout non e' sempre giusto: guarda i primi righi e scegli (i riquadri centrati entrano
+# nelle frasi). Il nome della copia viene dal file di origine: due estratti convivono,
+# lo stesso nome aggiorna. Una pagina: `materiali search` risponde con file, pagina e riga.
+python scripts/iv.py lezione <slug> --classe "3B"   # lezione per una classe (modalità docenza)
+python scripts/iv.py lezione <slug> --check         # una lezione scheletro non si porta in classe
 python scripts/iv.py stats --write       # diario di apprendimento in data/progress/<learner>/DIARIO.md
 python scripts/iv.py alias <slug> --add "<nome alternativo>"
 python scripts/iv.py merge <doppione> <slug-tenuto>

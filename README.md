@@ -80,7 +80,36 @@ That separation is the heart of the project: knowledge is regenerable, your prog
 - **Declared rigor**: every claim is labelled *well-established / simplified / contested / inference /
   to be verified*, and every sub-skill has a **To be verified** section. No invented sources.
 - **Verifiable simplicity**: each level has numeric readability targets (Gulpease index, words per
-  sentence) checked by `iv.py style` and the validator — so "explain it simply" does not depend on the model.
+  sentence) checked by `iv.py style` and the validator — so "explain it simply" does not depend on the model. The
+  **register** (who you are talking to: `standard`, `scolastico`, `bambino`) adds constraints on top of the
+  level target and never relaxes it: it lives in the profile's person record and is measured with
+  `style --registro` before any lesson is delivered.
+- **A plan from the deadline**: declare the exam date and the time you have, and `status` estimates whether
+  what is left fits; `due` anticipates the reviews that would land after the exam.
+- **Your own material is the source**: `materiali add` copies notes, syllabi and past papers into
+  `data/materiali/` (they stay yours and are not versioned), and generated content aligns to them. Link
+  a text transcript (`materiali testo`) and the engine searches **locally**, with no dependencies:
+  `materiali search` answers with file, page and line. The search is *lexical* — it finds no synonyms —
+  and only covers what was transcribed, which the command states instead of pretending it looked
+  everywhere.
+  Before transcribing, `strumenti` reports what **this** machine can do: if it finds `pdftotext` (or
+  `pypdf`, or `pymupdf`) the text is **copied** out of the PDF instead of being read, and that is the
+  difference between a copy and a reading. They are optional tools: when absent you read by eye and the
+  spot check becomes mandatory. (`pdftotext` must be called with `-enc UTF-8`: without it the output is
+  Latin-1 and the engine refuses the file, because broken accents are not a citable source.)
+  The engine cannot read the PDF nor judge how faithful a transcript is, so it does **the only check
+  available without trusting anyone**: characters per page. Declare `--pagine "1-50"` while the text
+  holds 8,000 characters and it refuses the copy instead of accepting it silently. It also records
+  `--mezzo` (how the text was obtained) and `--campione` (whether it was spot-checked) next to every
+  search result, so you know how much to trust it. The `-layout` flag, however, **is not always right**: it
+  keeps lists and tables but pushes centred blocks into the middle of sentences, and reading order matters
+  as much as the words. You choose by looking at the first lines of the extract, and two different extracts
+  of the same document coexist: search queries them all and says which one each hit came from.
+  The rest is procedure: before citing a transcript as a source, the agent must compare **at least three
+  randomly picked quotes** with the original and record the outcome. If one does not match, that
+  transcript is not a source — and it says so, instead of being quoted as though it were.
+- **Lessons for a class** (teaching mode): `lezione <slug> --classe "3B"` creates the lesson artefact, and
+  `lezione <slug> --check` refuses to let an unfilled skeleton into the classroom.
 
 ---
 
@@ -219,6 +248,7 @@ python scripts/iv.py register <slug> [--self-check "…"] [--force]
 python scripts/iv.py list [--json]               # saved topics
 python scripts/iv.py show <slug>                 # sub-skill files + progress
 python scripts/iv.py style <slug> | --text "…" [--level 2]   # readability (Gulpease) vs level target
+python scripts/iv.py style --text "…" --registro bambino      # ...tightening the target: who you are talking to
 
 # registry maintenance
 python scripts/iv.py alias <slug> --add "alternative name" | --list
@@ -234,6 +264,20 @@ python scripts/iv.py learner list | --json       # learner profiles with progres
 python scripts/iv.py learner merge <from> --into <to>   # merge two profiles without losing history
 python scripts/iv.py learner rename <name> --to "<corrected>"   # fix a name (keeps an alias)
 python scripts/iv.py learner delete <name> [--yes]   # without --yes it only previews
+python scripts/iv.py learner persona --learner <name>   # declared person: age band, time, deadline
+
+# user material and lessons (teaching mode)
+python scripts/iv.py strumenti   # what THIS machine has for extracting text from a PDF
+python scripts/iv.py materiali add <slug> --file "<notes.pdf>" --tipo appunti   # copies, never links
+python scripts/iv.py materiali list [<slug>] [--json]   # listing, index regenerated
+python scripts/iv.py materiali testo <slug> --material "<notes.pdf>" --file "<transcript.md>" \
+      --pagine "1-40" --mezzo testo|vista|ocr --campione "3 quotes checked against the original"
+python scripts/iv.py materiali search <slug> "<sentence from the material>" [--json]   # file, page, line
+python scripts/iv.py lezione <slug> --classe "3B" [--registro scolastico]   # create the lesson
+python scripts/iv.py lezione <slug> --check   # sections, minimum substance, readability
+python scripts/iv.py learner persona --banda-eta ragazzo --configurato-da "the parent" \
+      --budget-minuti 180 --scadenza 2026-12-15 --obiettivo "27/30"
+python scripts/iv.py learner persona --reset   # forget the person: progress is untouched
 ```
 
 Global options: `--data <folder>` (or the `IV_DATA` environment variable) to keep data outside the skill,
@@ -257,11 +301,14 @@ Global options: `--data <folder>` (or the `IV_DATA` environment variable) to kee
 │   └── schema-sottoskill.md
 ├── scripts/iv.py             # engine: registry, search, validation, progress, reviews
 ├── assets/templates/topic/   # skeleton of a new sub-skill
-├── tests/test_iv.py          # 54 engine tests
+├── assets/templates/lezione/ # skeleton of a lesson for a class (teaching mode)
+├── tests/test_iv.py          # 175 engine tests
 └── data/
     ├── registry.json         # index (regenerable, not versioned)
     ├── topics/<slug>/        # THE SAVED SUB-SKILLS
     │   └── metodo-feynman/   # complete, validated reference example
+    ├── materiali/<slug>/     # your material + its text transcripts (not versioned)
+    ├── lezioni/<slug>/       # lessons prepared for a class (not versioned)
     └── progress/<learner>/   # learner state (not versioned)
 ```
 
@@ -333,8 +380,9 @@ before it is needed:
 ### v0.4 — Smarter topics 🔍
 
 - **Semantic search** alongside lexical matching (local embeddings) to catch duplicates worded differently.
-- **Syllabus import**: from a PDF or a list of chapters, assisted generation of the module plan with human
-  review before validation.
+- **Syllabus import** (*partial*): the syllabus is already attached and searched with `materiali`, but the
+  module plan is still written by hand. Missing: from a list of chapters, assisted generation of the plan
+  with human review before validation.
 - **Automatic child sub-skills**: from prerequisites detected in the path, propose cascading creation.
 - **Weak-spot analysis**: if the same mistake recurs across topics, propose a cross-cutting sub-skill.
 
@@ -343,7 +391,14 @@ before it is needed:
 - **MCP server**: expose `iv.py` as MCP tools so any compatible client can use the system without knowing
   the command line.
 - **Reminders**: review notifications by email or calendar (exportable `.ics` available from v0.2).
-- **RAG over your own material**: index your lecture notes and PDFs as the preferred source of a sub-skill.
+- **RAG over your own material** (*started*): `materiali testo` + `materiali search` already search the
+  transcripts lexically, locally and without dependencies; the characters-per-page check catches a
+  truncated or summarised transcript; extracts of the same document (chapter by chapter, or with and
+  without `-layout`) **coexist** and are all searched, so the "one chapter at a time" flow is possible.
+  Missing: a **guided** flow for big documents (today it is a sequence the agent performs by hand),
+  ranking beyond lexical overlap, detection of a paraphrase that is the right length, and an automatic
+  check on the **readability of the extract** (a centred block landing inside a sentence passes every
+  check: only a reader sees it).
 - **GitHub Action**: automatic sub-skill validation on pull requests (`iv.py validate --all`) once the repo
   becomes a shared library of learning paths.
 - **Shared topic registry**: import/export individual sub-skills from other users, merging local progress.
@@ -367,9 +422,10 @@ references/  scripts/  assets/  tests/
 data/topics/metodo-feynman/     # reference example (optional)
 ```
 
-These stay out (already in `.gitignore`): `data/progress/` (your progress), `data/registry.json`
-(regenerable: rebuilt on first command from `data/topics/*/meta.json`), `data/_merged/`, `.agents/`
-(local link), `__pycache__/`.
+These stay out (already in `.gitignore`): `data/progress/` (your progress), `data/materiali/` (the
+material you fed in and its transcripts: yours), `data/lezioni/` (lessons written for a class),
+`data/registry.json` (regenerable: rebuilt on first command from `data/topics/*/meta.json`),
+`data/_merged/`, `.agents/` (local link), `__pycache__/`.
 
 ```bash
 git init
@@ -392,6 +448,21 @@ replace the copyright holder in `LICENSE` with your own name.
 
 ## Known limitations
 
+- **The "RAG" over your own material is not 100% reliable, and it will not become so.** These are not
+  generic caveats: three precise limits, each one you can verify yourself.
+  1. **It only searches what was transcribed.** A PDF that holds no text (a scan, or a "print to PDF"
+     done by the browser) has nothing to extract: the engine refuses it and the material stays
+     unsearchable, declared as such. There you need OCR or reading by eye.
+  2. **Search is lexical**: synonyms and rephrasings are not found. Searching for "weight precision
+     reduction" does not find the paragraph that says "quantisation".
+  3. **The engine does not guarantee how faithful a copy is**, because it cannot read documents.
+     Arithmetic does (characters per page catch truncation and wholesale summarising) and so does the
+     spot check (three quotes compared with the original before citing). A **paraphrase of the same
+     length** is indistinguishable from a transcript by any automatic check: only a reader can see it.
+     And the order of sentences can be altered by the PDF layout.
+
+  In practice: every result carries **file, page and line**, so you go and verify instead of trusting. A
+  reliable "RAG" here means *verifiable* — not *infallible*.
 - **Validation guarantees structure and minimums, not the truth or the prose of the content.** Quality
   depends on the generating agent: that is why reliability labels exist, why every sub-skill has a
   *To be verified* section, and why the frame requires a proofreading pass (the prose lint only catches
